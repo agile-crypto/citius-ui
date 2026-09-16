@@ -1,0 +1,1 @@
+"""Citius Console prototype package."""
