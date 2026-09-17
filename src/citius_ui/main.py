@@ -17,6 +17,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from citius_ui.auth.demo_personas import DEMO_PERSONAS, get_persona
 from citius_ui.auth.sessions import Session, SessionStore
 from citius_ui.config import AppConfig
+from citius_ui.history.memory_store import MemoryHistoryStore
+from citius_ui.workbench.app import build_workbench
 
 
 def _set_session_cookie(response: Response, config: AppConfig, session_id: str) -> None:
@@ -37,9 +39,11 @@ def _clear_session_cookie(response: Response, config: AppConfig) -> None:
 def build_app(config: AppConfig | None = None, *, store: SessionStore | None = None) -> FastAPI:
     config = config or AppConfig.from_env()
     sessions = store or SessionStore()
+    history = MemoryHistoryStore(limit=config.history_limit)
     app = FastAPI(title="Citius Console")
     app.state.config = config
     app.state.sessions = sessions
+    app.state.history = history
 
     def current_session(request: Request) -> Session | None:
         return sessions.get(request.cookies.get(config.session_cookie_name))
@@ -106,7 +110,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
         session = sessions.get(cookie)
         return session.subject if session else None
 
-    workbench = _build_workbench_placeholder()
+    workbench = build_workbench(config, sessions, history)
     gr.mount_gradio_app(app, workbench, path="/workbench", auth_dependency=auth_dependency)
     return app
 
@@ -143,12 +147,6 @@ def _identity_page(session: Session) -> str:
 <p><a href="/workbench">Open the Workbench</a></p>
 <form method="post" action="/logout"><button type="submit">Log out</button></form>
 </body></html>"""
-
-
-def _build_workbench_placeholder() -> gr.Blocks:
-    with gr.Blocks(title="Citius Workbench") as blocks:
-        gr.Markdown("# Citius API Workbench\nAuthenticated session active.")
-    return blocks
 
 
 def main() -> None:
