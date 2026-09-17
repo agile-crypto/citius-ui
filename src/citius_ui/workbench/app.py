@@ -1,8 +1,15 @@
-"""Service-organized Gradio Workbench wired to the SDK-backed actions."""
+"""Service-organized Gradio Workbench wired to the SDK-backed actions.
+
+Services are light parent accordions; each implemented RPC is a nested child
+accordion with per-field forms aligned to api/proto, clickable examples, an
+inline output panel, and, for producer RPCs, an inline history table with a
+per-RPC clear. Every execution funnels through the shared ActionExecutor so
+results are redacted and recorded in the session's history. Contract-only RPCs
+are listed honestly as unavailable.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -16,32 +23,41 @@ from citius_ui.grpc_client.client import CitiusClients
 from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
-from citius_ui.workbench.history_view import (
-    ACTIVITY_HEADERS,
-    PRODUCER_HEADERS,
-    activity_rows,
-    latest_consumer_handoff,
-    producer_rows,
-)
+from citius_ui.workbench.forms import FORMS, FormField, RpcFormSpec, build_request
 
 _AVAILABILITY_BADGE = {
-    Availability.AVAILABLE: "🟢 Available",
-    Availability.UNIMPLEMENTED: "🟡 Unimplemented by the server",
-    Availability.UNAVAILABLE: "🟠 Unavailable (missing dependency)",
-    Availability.FORBIDDEN: "🔴 Forbidden for this identity",
-    Availability.UNKNOWN: "⚪ Unknown until probed",
+    Availability.AVAILABLE: "Available",
+    Availability.UNIMPLEMENTED: "Unimplemented by the server",
+    Availability.UNAVAILABLE: "Unavailable (missing dependency)",
+    Availability.FORBIDDEN: "Forbidden for this identity",
+    Availability.UNKNOWN: "Unknown until probed",
 }
 
 CSS = """
-.title-container { text-align: center; margin: 12px 0 18px; padding: 24px;
-                   background: #a4c2f4; border-radius: 10px;
-                   box-shadow: 0 4px 8px rgba(0, 0, 0, .10); }
-.title-container h1 { color: #17233b; font-size: 2.35rem; margin: 0 0 8px; }
-.title-container p { color: #263a5d; font-size: 1rem; margin: 0; }
-.title-container hr { width: 80%; height: 2px; background: #ffffff; border: 0; margin: 12px auto; }
-.section-title { border-left: 5px solid #6d83f2; padding: 6px 12px; margin: 18px 0 10px; }
-.section-title h2 { font-size: 1.2rem; margin: 0; }
-.identity-note { border-left: 4px solid #5b8c5a; padding: 8px 12px; }
+:root { --citius-ink: #2f3d6b; --citius-accent: #8aa0e0; }
+.title-container { text-align: center; margin: 8px 0 18px; padding: 26px;
+                   background: linear-gradient(135deg, #dbe4fb, #eef2fb);
+                   border-radius: 14px; box-shadow: 0 4px 16px rgba(120, 140, 200, .18); }
+.title-container h1 { color: #2f3d6b; font-size: 2.1rem; margin: 0 0 8px; }
+.title-container p { color: #56628c; margin: 0; }
+.identity-note { border-left: 4px solid #7aa37a; background: #f4faf4; padding: 10px 14px;
+                 border-radius: 0 8px 8px 0; color: #37533a; }
+.service-accordion { border: 0 !important; margin: 8px 0 !important; }
+.service-accordion > button, .service-accordion > .label-wrap {
+    background: #dbe4fb !important; color: #2f3d6b !important;
+    font-size: 1.05rem !important; font-weight: 700 !important;
+    border-radius: 10px !important; padding: 12px 16px !important;
+    box-shadow: 0 2px 8px rgba(120, 140, 200, .16) !important; }
+.service-accordion > button span, .service-accordion > .label-wrap span { color: #2f3d6b !important; }
+.service-body { gap: 6px !important; padding: 6px 4px 2px !important; }
+.workbench-column { gap: 8px !important; }
+.rpc-accordion { margin: 5px 0 !important;
+                 border: 1px solid #e6ebf7 !important; border-left: 4px solid #d6ddf0 !important;
+                 border-radius: 8px !important; background: #fbfcff !important; }
+.rpc-accordion > button, .rpc-accordion > .label-wrap {
+    font-weight: 600 !important; color: #46527f !important; padding: 9px 13px !important; }
+.rpc-accordion.rpc-open { border-left: 4px solid var(--citius-accent) !important;
+                          background: #f2f5fe !important; box-shadow: inset 0 0 0 1px #e0e7f8 !important; }
 footer { visibility: hidden; }
 """
 
@@ -65,26 +81,6 @@ SERVICE_ORDER = [
     "StreamingCryptoService",
 ]
 
-REQUEST_EXAMPLES: dict[tuple[str, str], dict[str, Any]] = {
-    ("CryptoPolicyService", "CreateCryptoPolicy"): {
-        "name": "demo-signing-policy",
-        "policy_document": "version: v1\nallowed_operations: [SIGN, VERIFY]",
-        "format": "yaml",
-    },
-    ("CryptoPolicyService", "ReadCryptoPolicy"): {"name": "demo-signing-policy"},
-    ("KeyManagementService", "CreateKey"): {
-        "name": "demo-signing-key",
-        "policy": "demo-signing-policy",
-        "template_id": "ecdsa-p256-sha256",
-    },
-    ("KeyManagementService", "ReadKey"): {"name": "demo-signing-key"},
-    ("CryptoService", "Sign"): {"key_name": "demo-signing-key", "message": "Hello from Citius"},
-    ("CryptoService", "Encrypt"): {
-        "key_name": "demo-encryption-key",
-        "plaintext": "Sensitive demo payload",
-    },
-}
-
 
 def _ordered_services(grouped: dict[str, list[tuple[str, Availability]]]) -> list[str]:
     known = [service for service in SERVICE_ORDER if service in grouped]
@@ -92,61 +88,121 @@ def _ordered_services(grouped: dict[str, list[tuple[str, Availability]]]) -> lis
     return known + extra
 
 
+def _split_columns(services: list[str]) -> tuple[list[str], list[str]]:
+    """Split services into two balanced columns to reduce vertical spread."""
+    midpoint = (len(services) + 1) // 2
+    return services[:midpoint], services[midpoint:]
+
+
+def _forms_for(service: str) -> list[RpcFormSpec]:
+    return [form for form in FORMS if form.service == service]
+
+
+def _render_input(spec: FormField) -> gr.components.Component:
+    label = f"{spec.label} (optional)" if spec.optional else spec.label
+    if spec.kind == "area":
+        return gr.Textbox(label=label, placeholder=spec.placeholder, lines=6, max_lines=24)
+    if spec.kind == "number":
+        return gr.Number(label=label)
+    if spec.kind == "bool":
+        return gr.Checkbox(label=label)
+    if spec.kind == "dropdown":
+        value = spec.choices[0] if (spec.choices and not spec.optional) else None
+        return gr.Dropdown(label=label, choices=list(spec.choices), value=value, allow_custom_value=True)
+    return gr.Textbox(label=label, placeholder=spec.placeholder)
+
+
 def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHistoryStore) -> gr.Blocks:
     """Build the Gradio Workbench that executes actions for the current session."""
 
     grouped = registry_overview()
 
-    def _example(service: str, method: str) -> str:
-        return json.dumps(REQUEST_EXAMPLES.get((service, method), {}), indent=2)
-
-    def _run(
-        request: gr.Request, service: str, method: str, request_json: str
-    ) -> tuple[str, str, list[list[str]], list[list[str]]]:
-        session = sessions.get(request.cookies.get(config.session_cookie_name))
-        if session is None:
-            return "UNAUTHENTICATED", "No active session. Sign in again.", [], []
-        activity = activity_rows(history, session.history_id)
-        producers = producer_rows(history, session.history_id)
-        try:
-            payload = json.loads(request_json or "{}")
-        except json.JSONDecodeError as exc:
-            return "INVALID_ARGUMENT", f"Request is not valid JSON: {exc}", activity, producers
-
-        clients = CitiusClients(config, sessions.token_provider(session.id))
-        registry = build_registry(clients)
-        action = registry.get(service, method)
-        if action.availability is not Availability.AVAILABLE:
-            return (
-                action.availability.value.upper(),
-                _AVAILABILITY_BADGE[action.availability],
-                activity,
-                producers,
+    def _run_form(
+        spec: RpcFormSpec,
+    ) -> Any:
+        async def _handler(request: gr.Request, *values: object) -> tuple[str, str, Any]:
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is None:
+                return "UNAUTHENTICATED", "No active session. Sign in again.", gr.update()
+            payload = build_request(spec, list(values))
+            clients = CitiusClients(config, sessions.token_provider(session.id))
+            registry = build_registry(clients)
+            action = registry.get(spec.service, spec.method)
+            executor = ActionExecutor(history)
+            context = ExecutionContext(
+                session_id=session.history_id,
+                subject=session.subject,
+                endpoint=config.citius_endpoint,
             )
 
-        executor = ActionExecutor(history)
-        context = ExecutionContext(
-            session_id=session.history_id,
-            subject=session.subject,
-            endpoint=config.citius_endpoint,
-        )
-
-        async def _execute() -> tuple[str, str]:
             try:
                 result, _ = await executor.execute(action, context, payload)
-                return result.status.value, json.dumps(
-                    {"message": result.message, "response": result.response}, indent=2
-                )
+                status = result.status.value
+                response = json.dumps({"message": result.message, "response": result.response}, indent=2)
             finally:
                 await clients.close()
 
-        status, response = asyncio.run(_execute())
-        return (
-            status,
-            response,
-            activity_rows(history, session.history_id),
-            producer_rows(history, session.history_id),
-        )
+            if spec.produces:
+                return status, response, _producer_rows(session.history_id, spec.method)
+            return status, response, gr.update()
+
+        return _handler
+
+    def _producer_rows(history_id: str, method: str) -> list[list[str]]:
+        rows: list[list[str]] = []
+        for record in history.list(history_id):
+            if record.method != method:
+                continue
+            for artifact in record.artifacts:
+                rows.append(
+                    [
+                        record.timestamp.strftime("%H:%M:%S"),
+                        artifact.key_name,
+                        "" if artifact.key_version is None else str(artifact.key_version),
+                        json.dumps(artifact.bundle(), sort_keys=True),
+                    ]
+                )
+        return rows
+
+    def _render_rpc(spec: RpcFormSpec) -> None:
+        with gr.Accordion(spec.method, open=False, elem_classes=["rpc-accordion"]) as accordion:
+            inputs = [_render_input(field) for field in spec.fields]
+            with gr.Row():
+                run = gr.Button(spec.action_label, variant="primary")
+                clear = gr.Button("Clear", variant="secondary")
+            with gr.Accordion("Output", open=True, visible=False) as output_row:
+                status_box = gr.Textbox(label="Status", interactive=False)
+                response_box = gr.Code(language="json", label="Response", interactive=False)
+                history_table = None
+                if spec.produces:
+                    history_table = gr.Dataframe(
+                        headers=["Time", "Key name", "Key version", "Bundle"],
+                        col_count=(4, "fixed"),
+                        label=f"Previous {spec.method} responses",
+                        interactive=False,
+                        wrap=True,
+                    )
+            if spec.examples:
+                with gr.Accordion("Examples", open=True):
+                    gr.Examples(examples=[list(example) for example in spec.examples], inputs=inputs)
+
+            outputs = [status_box, response_box, history_table if history_table is not None else status_box]
+            run.click(lambda: gr.update(visible=True), outputs=output_row)
+            run.click(_run_form(spec), inputs=[*inputs], outputs=outputs)
+
+            clear_targets = [*inputs, status_box, response_box]
+            clear.click(lambda targets=clear_targets: [None for _ in targets], outputs=clear_targets)
+            if history_table is not None:
+                clear.click(lambda: [], outputs=history_table)
+
+            def _mark_open() -> dict[str, object]:
+                return gr.update(elem_classes=["rpc-accordion", "rpc-open"])
+
+            def _mark_closed() -> dict[str, object]:
+                return gr.update(elem_classes=["rpc-accordion"])
+
+            accordion.expand(_mark_open, outputs=accordion)
+            accordion.collapse(_mark_closed, outputs=accordion)
 
     with gr.Blocks(
         title="Citius API Workbench",
@@ -155,103 +211,53 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
         fill_width=True,
     ) as blocks:
         gr.HTML(
-            "<div class='title-container'><hr><h1>Citius API Workbench</h1>"
-            "<p>Explore the gRPC API by service and connect individual calls "
-            "into governed cryptographic workflows.</p><hr></div>",
+            "<div class='title-container'><h1>Citius API Workbench</h1>"
+            "<p>Open a service, then open an RPC to edit its fields and run it. "
+            "Every call is recorded in this session's history.</p></div>",
             padding=False,
         )
-
         identity_banner = gr.Markdown("Loading identity…", elem_classes="identity-note")
 
-        gr.HTML(
-            "<div class='section-title'><h2>Service capability overview</h2></div>",
-            padding=False,
-        )
-        for service in _ordered_services(grouped):
-            label = SERVICE_LABELS.get(service, service)
-            with gr.Accordion(f"{label} · {service}", open=(service == "CryptoService")):
-                badges = "\n".join(
-                    f"- `{method}` — {_AVAILABILITY_BADGE[availability]}" for method, availability in grouped[service]
-                )
-                gr.Markdown(badges)
-
-        gr.HTML(
-            "<div class='section-title'><h2>Multi-browser demo runbooks</h2></div>",
-            padding=False,
-        )
-        gr.Markdown(
-            "These runbooks are guidance over the same Workbench RPCs. Each step "
-            "names the browser identity to use and the expected outcome. Only safe "
-            "bundles cross browsers — never tokens."
-        )
         availability = {(service, method): avail for service, methods in grouped.items() for method, avail in methods}
 
         def _resolver(service: str, method: str) -> Availability:
             return availability.get((service, method), Availability.UNKNOWN)
 
-        for runbook in RUNBOOKS:
-            with gr.Accordion(runbook.title, open=False):
-                gr.Markdown(render_markdown(runbook, _resolver))
+        with gr.Tabs():
+            with gr.Tab("API Workbench"):
+                with gr.Row(equal_height=False):
+                    for column_services in _split_columns(_ordered_services(grouped)):
+                        with gr.Column(scale=1, min_width=360, elem_classes=["workbench-column"]):
+                            for service in column_services:
+                                label = SERVICE_LABELS.get(service, service)
+                                with gr.Accordion(
+                                    f"{label} · {service}", open=False, elem_classes=["service-accordion"]
+                                ):
+                                    with gr.Column(elem_classes=["service-body"]):
+                                        implemented = {form.method for form in _forms_for(service)}
+                                        for form in _forms_for(service):
+                                            _render_rpc(form)
+                                        unavailable = [
+                                            f"`{method}` — {_AVAILABILITY_BADGE[availability_state]}"
+                                            for method, availability_state in grouped.get(service, [])
+                                            if method not in implemented
+                                        ]
+                                        if unavailable:
+                                            with gr.Accordion(
+                                                "Not yet available", open=False, elem_classes=["rpc-accordion"]
+                                            ):
+                                                gr.Markdown("\n".join(f"- {row}" for row in unavailable))
 
-        gr.HTML(
-            "<div class='section-title'><h2>Execute an RPC</h2></div>",
-            padding=False,
-        )
-        gr.Markdown(
-            "Select a service and RPC, edit its protobuf-shaped JSON request, and "
-            "execute it. Every call runs through the shared executor and is recorded "
-            "in this session's history. Unimplemented server RPCs are shown honestly."
-        )
-
-        service_names = _ordered_services(grouped)
-        with gr.Row():
-            service_dd = gr.Dropdown(service_names, label="Service", value=service_names[0])
-            method_dd = gr.Dropdown(
-                [m for m, _ in grouped[service_names[0]]],
-                label="RPC",
-                value=grouped[service_names[0]][0][0],
-            )
-        with gr.Row(equal_height=False):
-            with gr.Column(scale=1):
-                request_box = gr.Code(
-                    value=_example(service_names[0], grouped[service_names[0]][0][0]),
-                    language="json",
-                    label="Request (JSON)",
-                )
-                run_btn = gr.Button("Execute", variant="primary")
-            with gr.Column(scale=1):
-                status_box = gr.Textbox(label="Status", interactive=False)
-                response_box = gr.Code(language="json", label="Response", interactive=False)
-
-        gr.HTML(
-            "<div class='section-title'><h2>Previous producer responses</h2></div>",
-            padding=False,
-        )
-        gr.Markdown(
-            "Successful Sign, DigestSign, and Encrypt responses appear here with a "
-            "copyable value-plus-metadata bundle. Reuse the newest one to prefill "
-            "Verify or Decrypt, replaying its recorded key version."
-        )
-        producer_table = gr.Dataframe(
-            headers=PRODUCER_HEADERS,
-            col_count=(len(PRODUCER_HEADERS), "fixed"),
-            interactive=False,
-            wrap=True,
-            label="Producer responses",
-        )
-        reuse_btn = gr.Button("Reuse latest producer response ↴")
-
-        gr.HTML(
-            "<div class='section-title'><h2>Session activity</h2></div>",
-            padding=False,
-        )
-        activity_table = gr.Dataframe(
-            headers=ACTIVITY_HEADERS,
-            col_count=(len(ACTIVITY_HEADERS), "fixed"),
-            interactive=False,
-            wrap=True,
-            label="Session activity",
-        )
+            with gr.Tab("Demo runbooks"):
+                with gr.Column(elem_classes=["service-body"]):
+                    gr.Markdown(
+                        "Guidance over the same Workbench RPCs. Each step names the browser "
+                        "identity to use and the expected outcome; only safe bundles cross "
+                        "browsers, never tokens."
+                    )
+                    for runbook in RUNBOOKS:
+                        with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]):
+                            gr.Markdown(render_markdown(runbook, _resolver))
 
         def _identity(request: gr.Request) -> str:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
@@ -264,46 +270,6 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
                 f"{'authenticated' if view['authenticated'] else 'no token supplied'}"
             )
 
-        def _on_service(service: str) -> tuple[Any, str]:
-            method_choices = [m for m, _ in grouped[service]]
-            first = method_choices[0]
-            return gr.update(choices=method_choices, value=first), _example(service, first)
-
-        def _on_method(service: str, method: str) -> str:
-            return _example(service, method)
-
-        def _load_activity(request: gr.Request) -> tuple[list[list[str]], list[list[str]]]:
-            session = sessions.get(request.cookies.get(config.session_cookie_name))
-            if session is None:
-                return [], []
-            return (
-                activity_rows(history, session.history_id),
-                producer_rows(history, session.history_id),
-            )
-
-        def _reuse(request: gr.Request) -> tuple[Any, Any, str]:
-            session = sessions.get(request.cookies.get(config.session_cookie_name))
-            if session is None:
-                return gr.update(), gr.update(), "{}"
-            handoff = latest_consumer_handoff(history, session.history_id)
-            if handoff is None:
-                return gr.update(), gr.update(), "{}"
-            service, method, request_json = handoff
-            return (
-                gr.update(value=service),
-                gr.update(choices=[m for m, _ in grouped[service]], value=method),
-                request_json,
-            )
-
         blocks.load(_identity, outputs=identity_banner)
-        blocks.load(_load_activity, outputs=[activity_table, producer_table])
-        service_dd.change(_on_service, inputs=service_dd, outputs=[method_dd, request_box])
-        method_dd.change(_on_method, inputs=[service_dd, method_dd], outputs=request_box)
-        run_btn.click(
-            _run,
-            inputs=[service_dd, method_dd, request_box],
-            outputs=[status_box, response_box, activity_table, producer_table],
-        )
-        reuse_btn.click(_reuse, outputs=[service_dd, method_dd, request_box])
 
     return blocks
