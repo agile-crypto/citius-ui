@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+from citius_ui.auth.oidc import (
+    OIDCConfig,
+    authorization_url,
+    create_pkce_challenge,
+    load_oidc_config,
+)
+
+_CONFIG = {
+    "project_id": "390129041866227715",
+    "issuer": "https://citius-auth.localhost:8443",
+    "audience": "urn:zitadel:iam:org:project:id:390129041866227715:aud",
+    "web_app": {
+        "client_id": "390994011386609667",
+        "redirect_uris": ["http://127.0.0.1:7861/auth/callback"],
+        "post_logout_redirect_uris": ["http://127.0.0.1:7861/"],
+        "enable_refresh_tokens": True,
+    },
+}
+
+
+def _write(tmp_path: Path, data: dict[str, Any]) -> str:
+    path = tmp_path / "citius-ui-auth.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return str(path)
+
+
+def test_load_oidc_config(tmp_path: Path) -> None:
+    config = load_oidc_config(_write(tmp_path, _CONFIG))
+    assert config.issuer == "https://citius-auth.localhost:8443"
+    assert config.client_id == "390994011386609667"
+    assert config.redirect_uri == "http://127.0.0.1:7861/auth/callback"
+    assert config.post_logout_redirect_uri == "http://127.0.0.1:7861/"
+    assert config.enable_refresh_tokens is True
+    assert config.authorization_endpoint.endswith("/oauth/v2/authorize")
+    assert config.token_endpoint.endswith("/oauth/v2/token")
+    assert config.end_session_endpoint.endswith("/oidc/v1/end_session")
+
+
+def test_load_oidc_config_rejects_missing_web_app(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="web_app"):
+        load_oidc_config(_write(tmp_path, {"issuer": "x"}))
+
+
+def test_load_oidc_config_rejects_missing_redirect(tmp_path: Path) -> None:
+    data = {"issuer": "x", "web_app": {"client_id": "c", "post_logout_redirect_uris": ["/"]}}
+    with pytest.raises(ValueError, match="redirect_uris"):
+        load_oidc_config(_write(tmp_path, data))
+
+
+def test_pkce_challenge_is_valid_s256() -> None:
+    pkce = create_pkce_challenge()
+    assert pkce.method == "S256"
+    expected = base64.urlsafe_b64encode(hashlib.sha256(pkce.verifier.encode()).digest())
+    assert pkce.challenge == expected.rstrip(b"=").decode()
+    assert "=" not in pkce.challenge
+    assert pkce.state and pkce.nonce
+    assert create_pkce_challenge().verifier != pkce.verifier
+
+
+def test_authorization_url_contains_pkce_and_state() -> None:
+    config = load_oidc_config_dict()
+    pkce = create_pkce_challenge()
+    url = authorization_url(config, pkce)
+    query = parse_qs(urlparse(url).query)
+    assert query["response_type"] == ["code"]
+    assert query["client_id"] == [config.client_id]
+    assert query["code_challenge"] == [pkce.challenge]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["state"] == [pkce.state]
+    assert query["nonce"] == [pkce.nonce]
+    assert "offline_access" in query["scope"][0]
+
+
+def test_authorization_url_omits_offline_access_without_refresh() -> None:
+    config = OIDCConfig(
+        issuer="https://issuer",
+        client_id="c",
+        audience="a",
+        redirect_uri="http://127.0.0.1/cb",
+        post_logout_redirect_uri="http://127.0.0.1/",
+        enable_refresh_tokens=False,
+    )
+    url = authorization_url(config, create_pkce_challenge())
+    query = parse_qs(urlparse(url).query)
+    assert "offline_access" not in query["scope"][0]
+
+
+def load_oidc_config_dict() -> OIDCConfig:
+    return OIDCConfig(
+        issuer="https://citius-auth.localhost:8443",
+        client_id="390994011386609667",
+        audience="aud",
+        redirect_uri="http://127.0.0.1:7861/auth/callback",
+        post_logout_redirect_uri="http://127.0.0.1:7861/",
+        enable_refresh_tokens=True,
+    )

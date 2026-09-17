@@ -70,6 +70,7 @@ files = [
   "tests/test_workbench_actions.py",
   "tests/test_history_view.py",
   "tests/test_runbooks.py",
+  "tests/test_oidc.py",
 ]
 
 [[tool.mypy.overrides]]
