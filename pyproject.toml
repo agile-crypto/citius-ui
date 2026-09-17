@@ -2,6 +2,8 @@
 name = "citius-ui"
 version = "0.0.0"
 description = "Citius Console UI prototype"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
   "gradio>=5,<6",
@@ -10,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "mypy>=1.18,<2",
   "pytest>=8,<9",
   "ruff>=0.16,<0.17",
 ]
@@ -34,3 +37,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/citius_ui/config.py", "tests/test_config.py"]

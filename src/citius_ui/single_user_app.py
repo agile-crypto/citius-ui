@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 from threading import Lock
 from typing import Any
 
 import gradio as gr
 
+from citius_ui.config import AppConfig
 from citius_ui.mock_engine import (
     IMPLEMENTED,
     PERSONAS,
@@ -479,6 +479,5 @@ def build_app() -> gr.Blocks:
 
 
 def main() -> None:
-    host = os.getenv("CITIUS_UI_HOST", "127.0.0.1")
-    port = int(os.getenv("CITIUS_UI_PORT", "7860"))
-    build_app().launch(server_name=host, server_port=port)
+    config = AppConfig.from_env()
+    build_app().launch(server_name=config.ui_host, server_port=config.ui_port)

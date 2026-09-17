@@ -38,11 +38,27 @@ uv sync --extra dev
 uv run citius-ui-mock
 ```
 
+Copy `.env.example` into deployment-specific environment configuration and
+adjust the Citius target, TLS trust, and generated non-secret OIDC configuration
+path. The application does not load `.env` automatically; inject these values
+through the process environment or deployment secret/configuration mechanism.
+
+The default paths assume `citius-ui` and `citius-server` are sibling checkouts.
+Run the canonical Zitadel setup from `citius-server` to generate
+`bootstrap/zitadel/citius-ui-auth.json`; the UI never provisions identities.
+
 ## Test
 
 ```bash
-PYTHONPATH=src pytest
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run mypy
+uv run pytest
+uv build
 ```
+
+CI runs the same gates and Gitleaks secret scanning. This project uses the
+Apache-2.0 license, matching the Citius server and Python SDK repositories.
 
 ## Mock limitations
 
