@@ -24,6 +24,39 @@ _AVAILABILITY_BADGE = {
     Availability.UNKNOWN: "⚪ Unknown until probed",
 }
 
+CSS = """
+.title-container { text-align: center; margin: 12px 0 18px; padding: 24px;
+                   background: #a4c2f4; border-radius: 10px;
+                   box-shadow: 0 4px 8px rgba(0, 0, 0, .10); }
+.title-container h1 { color: #17233b; font-size: 2.35rem; margin: 0 0 8px; }
+.title-container p { color: #263a5d; font-size: 1rem; margin: 0; }
+.title-container hr { width: 80%; height: 2px; background: #ffffff; border: 0; margin: 12px auto; }
+.section-title { border-left: 5px solid #6d83f2; padding: 6px 12px; margin: 18px 0 10px; }
+.section-title h2 { font-size: 1.2rem; margin: 0; }
+.identity-note { border-left: 4px solid #5b8c5a; padding: 8px 12px; }
+footer { visibility: hidden; }
+"""
+
+SERVICE_LABELS = {
+    "CryptoPolicyService": "Crypto Policy",
+    "KeyManagementService": "Key Management",
+    "CryptoService": "Cryptographic Operations",
+    "AlgorithmDiscoveryService": "Algorithm Discovery",
+    "ProviderService": "Provider Management",
+    "KeyEstablishmentService": "Key Establishment",
+    "StreamingCryptoService": "Streaming Cryptography",
+}
+
+SERVICE_ORDER = [
+    "CryptoPolicyService",
+    "KeyManagementService",
+    "CryptoService",
+    "AlgorithmDiscoveryService",
+    "ProviderService",
+    "KeyEstablishmentService",
+    "StreamingCryptoService",
+]
+
 REQUEST_EXAMPLES: dict[tuple[str, str], dict[str, Any]] = {
     ("CryptoPolicyService", "CreateCryptoPolicy"): {
         "name": "demo-signing-policy",
@@ -43,6 +76,12 @@ REQUEST_EXAMPLES: dict[tuple[str, str], dict[str, Any]] = {
         "plaintext": "Sensitive demo payload",
     },
 }
+
+
+def _ordered_services(grouped: dict[str, list[tuple[str, Availability]]]) -> list[str]:
+    known = [service for service in SERVICE_ORDER if service in grouped]
+    extra = [service for service in grouped if service not in SERVICE_ORDER]
+    return known + extra
 
 
 def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHistoryStore) -> gr.Blocks:
@@ -86,20 +125,44 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
 
         return asyncio.run(_execute())
 
-    with gr.Blocks(title="Citius API Workbench") as blocks:
-        gr.Markdown("# Citius API Workbench")
-        gr.Markdown(
-            "Every RPC runs through the shared executor and is recorded in this "
-            "session's history. Unimplemented server RPCs are shown honestly."
+    with gr.Blocks(
+        title="Citius API Workbench",
+        theme=gr.themes.Base(font=["IBM Plex Sans", "Arial", "sans-serif"]),
+        css=CSS,
+        fill_width=True,
+    ) as blocks:
+        gr.HTML(
+            "<div class='title-container'><hr><h1>Citius API Workbench</h1>"
+            "<p>Explore the gRPC API by service and connect individual calls "
+            "into governed cryptographic workflows.</p><hr></div>",
+            padding=False,
         )
-        for service, methods in grouped.items():
-            with gr.Accordion(service, open=(service == "CryptoService")):
+
+        identity_banner = gr.Markdown("Loading identity…", elem_classes="identity-note")
+
+        gr.HTML(
+            "<div class='section-title'><h2>Service capability overview</h2></div>",
+            padding=False,
+        )
+        for service in _ordered_services(grouped):
+            label = SERVICE_LABELS.get(service, service)
+            with gr.Accordion(f"{label} · {service}", open=(service == "CryptoService")):
                 badges = "\n".join(
-                    f"- `{method}` — {_AVAILABILITY_BADGE[availability]}" for method, availability in methods
+                    f"- `{method}` — {_AVAILABILITY_BADGE[availability]}" for method, availability in grouped[service]
                 )
                 gr.Markdown(badges)
 
-        service_names = list(grouped)
+        gr.HTML(
+            "<div class='section-title'><h2>Execute an RPC</h2></div>",
+            padding=False,
+        )
+        gr.Markdown(
+            "Select a service and RPC, edit its protobuf-shaped JSON request, and "
+            "execute it. Every call runs through the shared executor and is recorded "
+            "in this session's history. Unimplemented server RPCs are shown honestly."
+        )
+
+        service_names = _ordered_services(grouped)
         with gr.Row():
             service_dd = gr.Dropdown(service_names, label="Service", value=service_names[0])
             method_dd = gr.Dropdown(
@@ -107,14 +170,28 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
                 label="RPC",
                 value=grouped[service_names[0]][0][0],
             )
-        request_box = gr.Code(
-            value=_example(service_names[0], grouped[service_names[0]][0][0]),
-            language="json",
-            label="Request (JSON)",
-        )
-        run_btn = gr.Button("Execute", variant="primary")
-        status_box = gr.Textbox(label="Status", interactive=False)
-        response_box = gr.Code(language="json", label="Response", interactive=False)
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=1):
+                request_box = gr.Code(
+                    value=_example(service_names[0], grouped[service_names[0]][0][0]),
+                    language="json",
+                    label="Request (JSON)",
+                )
+                run_btn = gr.Button("Execute", variant="primary")
+            with gr.Column(scale=1):
+                status_box = gr.Textbox(label="Status", interactive=False)
+                response_box = gr.Code(language="json", label="Response", interactive=False)
+
+        def _identity(request: gr.Request) -> str:
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is None:
+                return "**No active session.** Sign in again to execute RPCs."
+            view = session.public_view()
+            return (
+                f"**Signed in as {view['display_name']}** (`{view['subject']}`) · "
+                f"endpoint `{view['endpoint']}` · "
+                f"{'authenticated' if view['authenticated'] else 'no token supplied'}"
+            )
 
         def _on_service(service: str) -> tuple[Any, str]:
             method_choices = [m for m, _ in grouped[service]]
@@ -124,6 +201,7 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
         def _on_method(service: str, method: str) -> str:
             return _example(service, method)
 
+        blocks.load(_identity, outputs=identity_banner)
         service_dd.change(_on_service, inputs=service_dd, outputs=[method_dd, request_box])
         method_dd.change(_on_method, inputs=[service_dd, method_dd], outputs=request_box)
         run_btn.click(

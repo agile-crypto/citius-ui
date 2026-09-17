@@ -115,37 +115,68 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
     return app
 
 
+_PAGE_STYLE = """
+<style>
+  :root { color-scheme: light; }
+  body { font-family: 'IBM Plex Sans', Arial, sans-serif; background: #eef2fb;
+         margin: 0; padding: 40px 16px; color: #17233b; }
+  .card { max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px;
+          box-shadow: 0 6px 20px rgba(0,0,0,.08); overflow: hidden; }
+  .banner { background: #a4c2f4; padding: 28px 32px; }
+  .banner h1 { margin: 0 0 6px; font-size: 1.9rem; }
+  .banner p { margin: 0; color: #263a5d; }
+  .body { padding: 24px 32px; }
+  label { display: block; margin: 14px 0 6px; font-weight: 600; }
+  select, input { width: 100%; padding: 10px; border: 1px solid #c3cbe0;
+                  border-radius: 8px; font-size: 1rem; box-sizing: border-box; }
+  button { margin-top: 20px; padding: 10px 18px; border: 0; border-radius: 8px;
+           background: #6d83f2; color: #fff; font-size: 1rem; cursor: pointer; }
+  button.secondary { background: #7a869a; }
+  a.action { display: inline-block; margin: 8px 0; color: #3b52c4; font-weight: 600; }
+  ul { padding-left: 20px; } li { margin: 2px 0; }
+  .muted { color: #5b6b8c; font-size: .9rem; }
+</style>
+"""
+
+
 def _login_page() -> str:
     options = "".join(
         f'<option value="{key}">{persona.display_name}</option>' for key, persona in DEMO_PERSONAS.items()
     )
-    return f"""<!doctype html><html><head><title>Citius Console</title></head>
+    return f"""<!doctype html><html><head><title>Citius Console</title>{_PAGE_STYLE}</head>
 <body>
-<h1>Citius Console</h1>
-<p>Development sign-in. One identity per browser session.</p>
-<form method="post" action="/dev-login">
-  <label>Persona
-    <select name="persona">{options}</select>
-  </label>
-  <label>Access token (optional, local development)
-    <input type="password" name="access_token" autocomplete="off" />
-  </label>
-  <button type="submit">Sign in</button>
-</form>
+<div class="card">
+  <div class="banner"><h1>Citius Console</h1>
+    <p>Development sign-in. One identity per browser session.</p></div>
+  <div class="body">
+    <form method="post" action="/dev-login">
+      <label for="persona">Persona</label>
+      <select id="persona" name="persona">{options}</select>
+      <label for="access_token">Access token (optional, local development)</label>
+      <input id="access_token" type="password" name="access_token" autocomplete="off" />
+      <p class="muted">Tokens are held server-side only and never written to the browser.</p>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
 </body></html>"""
 
 
 def _identity_page(session: Session) -> str:
     view = session.public_view()
     permissions = "".join(f"<li>{perm}</li>" for perm in view["permissions"])
-    return f"""<!doctype html><html><head><title>Citius Console</title></head>
+    return f"""<!doctype html><html><head><title>Citius Console</title>{_PAGE_STYLE}</head>
 <body>
-<h1>Signed in as {view["display_name"]}</h1>
-<p>Subject: {view["subject"]}</p>
-<p>Endpoint: {view["endpoint"]}</p>
-<ul>{permissions}</ul>
-<p><a href="/workbench">Open the Workbench</a></p>
-<form method="post" action="/logout"><button type="submit">Log out</button></form>
+<div class="card">
+  <div class="banner"><h1>Signed in as {view["display_name"]}</h1>
+    <p>{view["subject"]} · endpoint {view["endpoint"]}</p></div>
+  <div class="body">
+    <p><strong>Granted permissions</strong></p>
+    <ul>{permissions}</ul>
+    <p><a class="action" href="/workbench">Open the Workbench →</a></p>
+    <form method="post" action="/logout"><button class="secondary" type="submit">Log out</button></form>
+  </div>
+</div>
 </body></html>"""
 
 
