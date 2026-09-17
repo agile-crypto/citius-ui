@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -76,3 +79,61 @@ def test_logout_via_get_clears_session(client: TestClient) -> None:
     response = client.get("/logout")
     assert response.status_code == 303
     assert client.get("/identity").status_code == 401
+
+
+def test_login_without_oidc_config_returns_503(tmp_path: Path) -> None:
+    config = AppConfig(
+        session_cookie_secure=False,
+        oidc_config_path=tmp_path / "absent.json",
+    )
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+    assert client.get("/login").status_code == 503
+    assert client.get("/auth/callback?code=x&state=y").status_code == 503
+
+
+def test_login_redirects_to_authorization_endpoint(tmp_path: Path) -> None:
+    config_file = tmp_path / "citius-ui-auth.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "issuer": "https://issuer.example",
+                "audience": "aud",
+                "web_app": {
+                    "client_id": "client-123",
+                    "redirect_uris": ["http://127.0.0.1/auth/callback"],
+                    "post_logout_redirect_uris": ["http://127.0.0.1/"],
+                    "enable_refresh_tokens": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=config_file)
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+    response = client.get("/login")
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location.startswith("https://issuer.example/oauth/v2/authorize")
+    assert "code_challenge_method=S256" in location
+
+
+def test_auth_callback_rejects_unknown_state(tmp_path: Path) -> None:
+    config_file = tmp_path / "citius-ui-auth.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "issuer": "https://issuer.example",
+                "audience": "aud",
+                "web_app": {
+                    "client_id": "client-123",
+                    "redirect_uris": ["http://127.0.0.1/auth/callback"],
+                    "post_logout_redirect_uris": ["http://127.0.0.1/"],
+                    "enable_refresh_tokens": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=config_file)
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+    assert client.get("/auth/callback?code=abc&state=never-issued").status_code == 400

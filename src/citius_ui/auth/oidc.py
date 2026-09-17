@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
+import httpx
+
 _DEFAULT_SCOPES = ("openid", "profile", "email", "offline_access")
 
 
@@ -118,3 +120,84 @@ def authorization_url(
         "code_challenge_method": pkce.method,
     }
     return f"{config.authorization_endpoint}?{urlencode(params)}"
+
+
+class OIDCError(Exception):
+    """Raised when the token exchange or refresh fails."""
+
+
+@dataclass(frozen=True, slots=True)
+class TokenSet:
+    """Tokens returned by the OIDC token endpoint."""
+
+    access_token: str
+    refresh_token: str = ""
+    id_token: str = ""
+    expires_in: int | None = None
+
+    @classmethod
+    def from_response(cls, payload: dict[str, object]) -> TokenSet:
+        access_token = str(payload.get("access_token", ""))
+        if not access_token:
+            raise OIDCError("token response did not include an access_token")
+        expires = payload.get("expires_in")
+        return cls(
+            access_token=access_token,
+            refresh_token=str(payload.get("refresh_token", "")),
+            id_token=str(payload.get("id_token", "")),
+            expires_in=int(expires) if isinstance(expires, (int, float, str)) and expires != "" else None,
+        )
+
+
+async def exchange_code(
+    client: httpx.AsyncClient,
+    config: OIDCConfig,
+    *,
+    code: str,
+    code_verifier: str,
+) -> TokenSet:
+    """Exchange an authorization code for tokens using PKCE (no client secret)."""
+    response = await client.post(
+        config.token_endpoint,
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": config.redirect_uri,
+            "client_id": config.client_id,
+            "code_verifier": code_verifier,
+        },
+    )
+    if response.status_code != httpx.codes.OK:
+        raise OIDCError(f"token exchange failed with status {response.status_code}")
+    return TokenSet.from_response(response.json())
+
+
+async def refresh_tokens(
+    client: httpx.AsyncClient,
+    config: OIDCConfig,
+    *,
+    refresh_token: str,
+) -> TokenSet:
+    """Exchange a refresh token for a new token set."""
+    response = await client.post(
+        config.token_endpoint,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": config.client_id,
+        },
+    )
+    if response.status_code != httpx.codes.OK:
+        raise OIDCError(f"token refresh failed with status {response.status_code}")
+    return TokenSet.from_response(response.json())
+
+
+def end_session_url(config: OIDCConfig, *, id_token: str = "") -> str:
+    """Build the federated-logout URL for the Zitadel end-session endpoint."""
+    params: dict[str, str] = {
+        "client_id": config.client_id,
+        "post_logout_redirect_uri": config.post_logout_redirect_uri,
+    }
+    if id_token:
+        params["id_token_hint"] = id_token
+    return f"{config.end_session_endpoint}?{urlencode(params)}"

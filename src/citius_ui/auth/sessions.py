@@ -25,6 +25,7 @@ class Session:
     history_id: str
     access_token: str = ""
     refresh_token: str = ""
+    id_token: str = ""
     expires_at: datetime | None = None
     endpoint: str | None = None
     permissions: frozenset[str] = frozenset()
@@ -64,6 +65,7 @@ class SessionStore:
         display_name: str,
         access_token: str = "",
         refresh_token: str = "",
+        id_token: str = "",
         ttl_seconds: float | None = None,
         endpoint: str | None = None,
         permissions: frozenset[str] = frozenset(),
@@ -80,6 +82,7 @@ class SessionStore:
             history_id=history_id,
             access_token=access_token,
             refresh_token=refresh_token,
+            id_token=id_token,
             expires_at=expires_at,
             endpoint=endpoint,
             permissions=permissions,

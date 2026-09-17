@@ -8,17 +8,31 @@ session store and are never written to the browser or logs.
 
 from __future__ import annotations
 
+import time
 from typing import Annotated
 
 import gradio as gr
+import httpx
 from fastapi import FastAPI, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from citius_ui.auth.demo_personas import DEMO_PERSONAS, get_persona
+from citius_ui.auth.oidc import (
+    OIDCConfig,
+    OIDCError,
+    PkceChallenge,
+    authorization_url,
+    create_pkce_challenge,
+    end_session_url,
+    exchange_code,
+    load_oidc_config,
+)
 from citius_ui.auth.sessions import Session, SessionStore
 from citius_ui.config import AppConfig
 from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.workbench.app import build_workbench
+
+_PENDING_LOGIN_TTL_SECONDS = 600.0
 
 
 def _set_session_cookie(response: Response, config: AppConfig, session_id: str) -> None:
@@ -44,6 +58,18 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
     app.state.config = config
     app.state.sessions = sessions
     app.state.history = history
+
+    oidc_config: OIDCConfig | None = None
+    try:
+        oidc_config = load_oidc_config(config.oidc_config_path)
+    except (OSError, ValueError):
+        oidc_config = None
+    pending_logins: dict[str, tuple[PkceChallenge, float]] = {}
+
+    def _prune_pending() -> None:
+        cutoff = time.monotonic() - _PENDING_LOGIN_TTL_SECONDS
+        for state in [state for state, (_, created) in pending_logins.items() if created < cutoff]:
+            pending_logins.pop(state, None)
 
     def current_session(request: Request) -> Session | None:
         return sessions.get(request.cookies.get(config.session_cookie_name))
@@ -91,6 +117,54 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
         _set_session_cookie(response, config, session.id)
         return response
 
+    @app.get("/login")
+    async def login() -> Response:
+        if oidc_config is None:
+            return JSONResponse(
+                {"error": "OIDC is not configured; use development sign-in"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        _prune_pending()
+        pkce = create_pkce_challenge()
+        pending_logins[pkce.state] = (pkce, time.monotonic())
+        return RedirectResponse(
+            url=authorization_url(oidc_config, pkce),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @app.get("/auth/callback")
+    async def auth_callback(request: Request) -> Response:
+        if oidc_config is None:
+            return JSONResponse(
+                {"error": "OIDC is not configured"},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+        if not code or not state:
+            return JSONResponse({"error": "missing code or state"}, status_code=status.HTTP_400_BAD_REQUEST)
+        entry = pending_logins.pop(state, None)
+        if entry is None:
+            return JSONResponse({"error": "invalid or expired state"}, status_code=status.HTTP_400_BAD_REQUEST)
+        pkce, _ = entry
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                tokens = await exchange_code(client, oidc_config, code=code, code_verifier=pkce.verifier)
+        except OIDCError:
+            return JSONResponse({"error": "token exchange failed"}, status_code=status.HTTP_401_UNAUTHORIZED)
+        session = sessions.create(
+            subject="",
+            display_name="",
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            id_token=tokens.id_token,
+            ttl_seconds=tokens.expires_in,
+            endpoint=config.citius_endpoint,
+        )
+        response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        _set_session_cookie(response, config, session.id)
+        return response
+
     @app.get("/identity")
     async def identity(request: Request) -> JSONResponse:
         session = current_session(request)
@@ -100,8 +174,13 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
 
     @app.api_route("/logout", methods=["GET", "POST"])
     async def logout(request: Request) -> Response:
+        session = current_session(request)
+        id_token = session.id_token if session else ""
         sessions.delete(request.cookies.get(config.session_cookie_name))
-        response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        destination = "/"
+        if oidc_config is not None and id_token:
+            destination = end_session_url(oidc_config, id_token=id_token)
+        response = RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
         _clear_session_cookie(response, config)
         return response
 

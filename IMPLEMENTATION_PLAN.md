@@ -35,7 +35,7 @@ Last updated: 2026-09-17
 
 ### Remaining work, in planned order
 
-- [ ] Wire production-style Zitadel Authorization Code with PKCE login, refresh, logout, token forwarding, and identity/claim display without exposing raw tokens (Phase 7). Foundation landed: an `auth/oidc.py` that loads the generated non-secret Zitadel UI config and builds PKCE verifier/challenge/state/nonce and the authorization URL (S256), unit-tested. Remaining: the FastAPI `/login`, `/auth/callback`, refresh, and federated-logout routes against a live Zitadel, plus browser end-to-end coverage.
+- [ ] Wire production-style Zitadel Authorization Code with PKCE login, refresh, logout, token forwarding, and identity/claim display without exposing raw tokens (Phase 7). Landed and unit-tested against mocked endpoints: `auth/oidc.py` config loading, PKCE, authorization URL, `exchange_code`/`refresh_tokens`/`end_session_url`; FastAPI `/login`, `/auth/callback` (state validation + token exchange + server-side session), and federated `/logout`; access/refresh/id tokens stored server-side only. Remaining: verification against a live Zitadel (real code exchange, refresh scheduling, nonce/issuer claim validation) and browser end-to-end coverage for the three personas.
 - [ ] Expand the Workbench and demonstrations as discovery, provider, lifecycle, and migration RPCs become available (Phase 8).
 - [ ] Add optional persistent history, deployment packaging, security hardening, observability, and end-to-end browser coverage (Phase 9).
 - [ ] Reassess whether Gradio remains the right frontend after the first complete release; retain the transport and application layers if a dedicated frontend is adopted (Phase 10).

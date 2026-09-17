@@ -7,13 +7,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 
 from citius_ui.auth.oidc import (
     OIDCConfig,
+    OIDCError,
     authorization_url,
     create_pkce_challenge,
+    end_session_url,
+    exchange_code,
     load_oidc_config,
+    refresh_tokens,
 )
 
 _CONFIG = {
@@ -105,3 +110,86 @@ def load_oidc_config_dict() -> OIDCConfig:
         post_logout_redirect_uri="http://127.0.0.1:7861/",
         enable_refresh_tokens=True,
     )
+
+
+def _mock_client(handler: Any) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_returns_tokens() -> None:
+    config = load_oidc_config_dict()
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = dict(pair.split("=", 1) for pair in request.content.decode().split("&"))
+        captured.update(body)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "at-123",
+                "refresh_token": "rt-456",
+                "id_token": "it-789",
+                "expires_in": 3600,
+            },
+        )
+
+    async with _mock_client(handler) as client:
+        tokens = await exchange_code(client, config, code="auth-code", code_verifier="verifier")
+
+    assert tokens.access_token == "at-123"
+    assert tokens.refresh_token == "rt-456"
+    assert tokens.id_token == "it-789"
+    assert tokens.expires_in == 3600
+    assert captured["grant_type"] == "authorization_code"
+    assert captured["code_verifier"] == "verifier"
+    assert "client_secret" not in captured
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_raises_on_error_status() -> None:
+    config = load_oidc_config_dict()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    async with _mock_client(handler) as client:
+        with pytest.raises(OIDCError):
+            await exchange_code(client, config, code="bad", code_verifier="v")
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_requires_access_token() -> None:
+    config = load_oidc_config_dict()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"refresh_token": "rt"})
+
+    async with _mock_client(handler) as client:
+        with pytest.raises(OIDCError):
+            await exchange_code(client, config, code="c", code_verifier="v")
+
+
+@pytest.mark.asyncio
+async def test_refresh_tokens_returns_new_access_token() -> None:
+    config = load_oidc_config_dict()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = dict(pair.split("=", 1) for pair in request.content.decode().split("&"))
+        assert body["grant_type"] == "refresh_token"
+        return httpx.Response(200, json={"access_token": "at-new", "refresh_token": "rt-new"})
+
+    async with _mock_client(handler) as client:
+        tokens = await refresh_tokens(client, config, refresh_token="rt-old")
+
+    assert tokens.access_token == "at-new"
+    assert tokens.refresh_token == "rt-new"
+
+
+def test_end_session_url_includes_id_token_hint() -> None:
+    config = load_oidc_config_dict()
+    url = end_session_url(config, id_token="it-789")
+    query = parse_qs(urlparse(url).query)
+    assert url.startswith(config.end_session_endpoint)
+    assert query["id_token_hint"] == ["it-789"]
+    assert query["post_logout_redirect_uri"] == [config.post_logout_redirect_uri]
