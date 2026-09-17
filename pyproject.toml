@@ -28,6 +28,7 @@ citius-python-sdk = { path = "../citius-python-sdk", editable = true }
 [project.scripts]
 citius-ui-mock = "citius_ui.single_user_app:main"
 citius-ui = "citius_ui.main:main"
+citius-ui-layout-mock = "citius_ui.workbench.mock_surface:main"
 
 [build-system]
 requires = ["hatchling"]
