@@ -41,4 +41,15 @@ select = ["E", "F", "I"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["src/citius_ui/config.py", "tests/test_config.py"]
+files = [
+  "src/citius_ui/config.py",
+  "src/citius_ui/actions",
+  "src/citius_ui/history",
+  "src/citius_ui/auth",
+  "tests/test_config.py",
+  "tests/test_redaction.py",
+  "tests/test_registry.py",
+  "tests/test_history_store.py",
+  "tests/test_artifacts.py",
+  "tests/test_executor.py",
+]

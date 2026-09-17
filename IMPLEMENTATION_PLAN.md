@@ -8,7 +8,7 @@ Reference UI: `/home/navaneeth/PycharmProjects/caas-ui`
 
 ## Implementation status
 
-Last updated: 2026-09-16
+Last updated: 2026-09-17
 
 ### Completed so far
 
@@ -26,11 +26,11 @@ Last updated: 2026-09-16
 - [x] Implement, test, and publish the `zitadel-grpc-auth` follow-up that treats Zitadel's action-trigger `FailedPrecondition: No Changes` response as idempotent success (`0b81449`, released as `v0.2.1`).
 - [x] Isolate every Citius `setup-auth` invocation from the root workspace with `GOWORK=off` and consume `zitadel-grpc-auth v0.2.1` (`327e458`).
 - [x] Establish the `citius-ui` repository baseline with locked dependencies, project-local lint/test configuration, the reviewed single-user Gradio mock, examples, and per-session operation/producer-response history.
+- [x] Implement the Python async gRPC client over `citius-api-python` in the standalone `citius-python-sdk` (Phase 1): `grpc.aio` channel factory with insecure/TLS/mTLS, validated CA material, per-call bearer metadata for unary and streaming RPCs, `CallableTokenProvider`, configurable deadlines and message-size limits, a normalized `CitiusError` hierarchy (`from_rpc_error`/`map_rpc_errors`), a lossless `OperationMetadata` wrapper, an API-version compatibility check, and the `Discovery`, `Crypto`, `KeyManagement`, and `CryptoPolicy` service clients covering the currently implemented RPCs. Verified by 45 unit tests with in-process fake gRPC servers.
+- [x] Implement the transport-independent application layer core (Phase 2): the `RpcAction` model with availability and result-status enums, an `ActionRegistry`, typed `Artifact` bundles preserving the complete `OperationMetadata` with compatibility hand-off rules, the `OperationRecord` model, a session-isolated `MemoryHistoryStore` with bounded retention, request/response redaction, and a shared `ActionExecutor` that normalizes results, redacts snapshots, extracts artifacts, and records history. Verified by unit tests independent of Gradio and the SDK.
 
 ### Remaining work, in planned order
 
-- [ ] Implement the Python async gRPC client over `citius-api-python`, including TLS, bearer metadata, deadlines, error normalization, and API-version compatibility checks (Phase 1).
-- [ ] Implement the shared RPC action registry, request/response normalization, artifact extraction, and per-session history core (Phase 2).
 - [ ] Mount Gradio in FastAPI and add secure server-side sessions plus development authentication scaffolding (Phase 3).
 - [ ] Build the initial service-organized Workbench for the currently implemented policy, key-management, and crypto RPCs, with unavailable RPCs shown honestly (Phase 4).
 - [ ] Add inline producer-response history, copy/reuse actions, and Encrypt→Decrypt and Sign→Verify chaining across key rotation or transformation (Phase 5).
