@@ -59,6 +59,7 @@ files = [
   "src/citius_ui/grpc_client",
   "src/citius_ui/workbench/actions.py",
   "src/citius_ui/workbench/history_view.py",
+  "src/citius_ui/showcases",
   "tests/test_config.py",
   "tests/test_redaction.py",
   "tests/test_registry.py",
@@ -68,6 +69,7 @@ files = [
   "tests/test_sessions.py",
   "tests/test_workbench_actions.py",
   "tests/test_history_view.py",
+  "tests/test_runbooks.py",
 ]
 
 [[tool.mypy.overrides]]

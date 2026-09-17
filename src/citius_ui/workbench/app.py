@@ -14,6 +14,7 @@ from citius_ui.auth.sessions import SessionStore
 from citius_ui.config import AppConfig
 from citius_ui.grpc_client.client import CitiusClients
 from citius_ui.history.memory_store import MemoryHistoryStore
+from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
 from citius_ui.workbench.history_view import (
     ACTIVITY_HEADERS,
@@ -173,6 +174,24 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
                     f"- `{method}` — {_AVAILABILITY_BADGE[availability]}" for method, availability in grouped[service]
                 )
                 gr.Markdown(badges)
+
+        gr.HTML(
+            "<div class='section-title'><h2>Multi-browser demo runbooks</h2></div>",
+            padding=False,
+        )
+        gr.Markdown(
+            "These runbooks are guidance over the same Workbench RPCs. Each step "
+            "names the browser identity to use and the expected outcome. Only safe "
+            "bundles cross browsers — never tokens."
+        )
+        availability = {(service, method): avail for service, methods in grouped.items() for method, avail in methods}
+
+        def _resolver(service: str, method: str) -> Availability:
+            return availability.get((service, method), Availability.UNKNOWN)
+
+        for runbook in RUNBOOKS:
+            with gr.Accordion(runbook.title, open=False):
+                gr.Markdown(render_markdown(runbook, _resolver))
 
         gr.HTML(
             "<div class='section-title'><h2>Execute an RPC</h2></div>",
