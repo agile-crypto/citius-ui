@@ -20,33 +20,33 @@ from dataclasses import dataclass
 import gradio as gr
 
 CSS = """
-:root { --citius-indigo: #4b5bd6; --citius-indigo-dark: #37409e; --citius-sky: #a4c2f4; }
+:root { --citius-ink: #3a4a7a; --citius-accent: #8aa0e0; --citius-soft: #eef2fb; }
 .title-container { text-align: center; margin: 8px 0 18px; padding: 26px;
-                   background: linear-gradient(135deg, #4b5bd6, #7a8cf0);
-                   border-radius: 14px; box-shadow: 0 8px 22px rgba(75, 91, 214, .28); }
-.title-container h1 { color: #ffffff; font-size: 2.2rem; margin: 0 0 8px; letter-spacing: .3px; }
-.title-container p { color: #e6ebff; margin: 0; }
-.mock-note { border-left: 4px solid #d8a400; background: #fffbea; padding: 10px 14px;
-             margin-bottom: 16px; border-radius: 0 8px 8px 0; }
+                   background: linear-gradient(135deg, #dbe4fb, #eef2fb);
+                   border-radius: 14px; box-shadow: 0 4px 16px rgba(120, 140, 200, .18); }
+.title-container h1 { color: #2f3d6b; font-size: 2.1rem; margin: 0 0 8px; letter-spacing: .3px; }
+.title-container p { color: #56628c; margin: 0; }
+.mock-note { border-left: 4px solid #e3c86b; background: #fffdf3; padding: 10px 14px;
+             margin-bottom: 16px; border-radius: 0 8px 8px 0; color: #5a5330; }
 
-/* Parent (service) accordion: bold indigo header bar. */
+/* Parent (service) accordion: soft blue header. */
 .service-accordion { border: 0 !important; margin: 14px 0 !important; }
 .service-accordion > button, .service-accordion > .label-wrap {
-    background: linear-gradient(135deg, var(--citius-indigo), var(--citius-indigo-dark)) !important;
-    color: #ffffff !important; font-size: 1.1rem !important; font-weight: 700 !important;
+    background: #dbe4fb !important; color: #2f3d6b !important;
+    font-size: 1.05rem !important; font-weight: 700 !important;
     border-radius: 10px !important; padding: 14px 18px !important;
-    box-shadow: 0 4px 12px rgba(55, 64, 158, .25) !important; }
-.service-accordion > button span, .service-accordion > .label-wrap span { color: #ffffff !important; }
+    box-shadow: 0 2px 8px rgba(120, 140, 200, .16) !important; }
+.service-accordion > button span, .service-accordion > .label-wrap span { color: #2f3d6b !important; }
 
-/* Child (RPC) accordion: light card with an indigo left accent that brightens when open. */
+/* Child (RPC) accordion: pale card with a soft left accent that brightens when open. */
 .rpc-accordion { margin: 8px 0 8px 14px !important;
-                 border: 1px solid #dfe4f5 !important; border-left: 4px solid #c3cbe8 !important;
+                 border: 1px solid #e6ebf7 !important; border-left: 4px solid #d6ddf0 !important;
                  border-radius: 8px !important; background: #fbfcff !important; }
 .rpc-accordion > button, .rpc-accordion > .label-wrap {
-    font-weight: 600 !important; color: #2b336b !important; padding: 10px 14px !important; }
-.rpc-accordion.rpc-open { border-left: 4px solid var(--citius-indigo) !important;
-                          background: #eef1ff !important; box-shadow: inset 0 0 0 1px #cdd5f5 !important; }
-.rpc-accordion.rpc-open > button, .rpc-accordion.rpc-open > .label-wrap { color: var(--citius-indigo-dark) !important; }
+    font-weight: 600 !important; color: #46527f !important; padding: 10px 14px !important; }
+.rpc-accordion.rpc-open { border-left: 4px solid var(--citius-accent) !important;
+                          background: #f2f5fe !important; box-shadow: inset 0 0 0 1px #e0e7f8 !important; }
+.rpc-accordion.rpc-open > button, .rpc-accordion.rpc-open > .label-wrap { color: #2f3d6b !important; }
 
 footer { visibility: hidden; }
 """
@@ -84,7 +84,7 @@ _ENCRYPT_SCOPES = ("no_params", "aead_params", "xts_params", "asymmetric_params"
 _SIGN_SCOPES = ("no_context", "domain_context", "vendor_context")
 
 SERVICES: dict[str, tuple[RpcForm, ...]] = {
-    "🛡️  Crypto Policy · CryptoPolicyService": (
+    "Crypto Policy · CryptoPolicyService": (
         RpcForm(
             "CreateCryptoPolicy",
             "Create",
@@ -116,7 +116,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
             examples=(("demo-signing-policy", _SAMPLE_POLICY + "\nmax_key_age_days: 90", "yaml", 1),),
         ),
     ),
-    "🔑  Key Management · KeyManagementService": (
+    "Key Management · KeyManagementService": (
         RpcForm(
             "CreateKey",
             "Create",
@@ -153,7 +153,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
             advanced='{\n  "scope_spec": {}\n}',
         ),
     ),
-    "🔐  Cryptographic Operations · CryptoService": (
+    "Cryptographic Operations · CryptoService": (
         RpcForm(
             "Sign",
             "Sign",
@@ -305,7 +305,7 @@ def build_mock_surface() -> gr.Blocks:
         )
         gr.HTML(
             "<div class='mock-note'><strong>Decision aid:</strong> services are the "
-            "bold indigo bars; each RPC is an indented card that highlights when open. "
+            "soft blue bars; each RPC is an indented card that highlights when open. "
             "Common fields mirror api/proto, documents are resizable, the scope is a "
             "dropdown with advanced JSON, and examples prefill the fields.</div>",
             padding=False,
