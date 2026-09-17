@@ -8,10 +8,13 @@ requires-python = ">=3.11"
 dependencies = [
   "gradio>=5,<6",
   "pandas>=2,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.27,<1",
   "mypy>=1.18,<2",
   "pytest>=8,<9",
   "ruff>=0.16,<0.17",
@@ -19,6 +22,7 @@ dev = [
 
 [project.scripts]
 citius-ui-mock = "citius_ui.single_user_app:main"
+citius-ui = "citius_ui.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -52,4 +56,9 @@ files = [
   "tests/test_history_store.py",
   "tests/test_artifacts.py",
   "tests/test_executor.py",
+  "tests/test_sessions.py",
 ]
+
+[[tool.mypy.overrides]]
+module = ["gradio.*"]
+ignore_missing_imports = true

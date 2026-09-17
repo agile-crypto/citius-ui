@@ -38,6 +38,23 @@ uv sync --extra dev
 uv run citius-ui-mock
 ```
 
+### FastAPI host with server-side sessions
+
+The `citius-ui` entry point mounts the Gradio Workbench inside FastAPI behind an
+opaque, HTTP-only session cookie. Development sign-in seeds one of the demo
+personas per browser session; hosted Authorization Code with PKCE replaces this
+dev sign-in in a later phase.
+
+```bash
+uv run citius-ui
+```
+
+Then open <http://127.0.0.1:7860>, sign in as a persona, and open
+`/workbench`. Access tokens live only in the server-side session store and are
+never written to the browser or logs. `/healthz` and `/readyz` expose liveness
+and readiness. Switching identity requires logging out; use separate browser
+profiles for concurrent personas.
+
 Copy `.env.example` into deployment-specific environment configuration and
 adjust the Citius target, TLS trust, and generated non-secret OIDC configuration
 path. The application does not load `.env` automatically; inject these values
