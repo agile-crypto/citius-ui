@@ -58,6 +58,7 @@ CSS = """
     font-weight: 600 !important; color: #46527f !important; padding: 9px 13px !important; }
 .rpc-accordion.rpc-open { border-left: 4px solid var(--citius-accent) !important;
                           background: #f2f5fe !important; box-shadow: inset 0 0 0 1px #e0e7f8 !important; }
+.logout-button { max-width: 140px; align-self: flex-end; }
 footer { visibility: hidden; }
 """
 
@@ -217,6 +218,10 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
             padding=False,
         )
         identity_banner = gr.Markdown("Loading identity…", elem_classes="identity-note")
+        with gr.Row():
+            with gr.Accordion("View granted permissions", open=False, elem_classes=["rpc-accordion"]):
+                permissions_view = gr.Markdown("Sign in to see effective permissions.")
+        gr.Button("Log out", link="/logout", variant="secondary", elem_classes=["logout-button"])
 
         availability = {(service, method): avail for service, methods in grouped.items() for method, avail in methods}
 
@@ -259,17 +264,28 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
                         with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]):
                             gr.Markdown(render_markdown(runbook, _resolver))
 
-        def _identity(request: gr.Request) -> str:
+        def _identity(request: gr.Request) -> tuple[str, str]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
-                return "**No active session.** Sign in again to execute RPCs."
+                return (
+                    "**No active session.** Sign in again to execute RPCs.",
+                    "Sign in to see effective permissions.",
+                )
             view = session.public_view()
-            return (
+            banner = (
                 f"**Signed in as {view['display_name']}** (`{view['subject']}`) · "
                 f"endpoint `{view['endpoint']}` · "
                 f"{'authenticated' if view['authenticated'] else 'no token supplied'}"
             )
+            permissions = view["permissions"]
+            key_allow = view["key_allow"]
+            key_deny = view["key_deny"]
+            lines = ["**Method permissions**"]
+            lines += [f"- `{perm}`" for perm in permissions] or ["- (none)"]
+            lines.append("")
+            lines.append(f"**Resource access** · allow {key_allow or ['(none)']} · deny {key_deny or ['(none)']}")
+            return banner, "\n".join(lines)
 
-        blocks.load(_identity, outputs=identity_banner)
+        blocks.load(_identity, outputs=[identity_banner, permissions_view])
 
     return blocks

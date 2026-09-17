@@ -98,7 +98,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             return JSONResponse({"authenticated": False}, status_code=status.HTTP_401_UNAUTHORIZED)
         return JSONResponse(session.public_view())
 
-    @app.post("/logout")
+    @app.api_route("/logout", methods=["GET", "POST"])
     async def logout(request: Request) -> Response:
         sessions.delete(request.cookies.get(config.session_cookie_name))
         response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)

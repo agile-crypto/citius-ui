@@ -68,3 +68,11 @@ def test_concurrent_sessions_are_isolated() -> None:
 
     assert producer.get("/identity").json()["subject"] == "citius-producer"
     assert consumer.get("/identity").json()["subject"] == "citius-consumer"
+
+
+def test_logout_via_get_clears_session(client: TestClient) -> None:
+    client.post("/dev-login", data={"persona": "ciso"})
+    assert client.get("/identity").status_code == 200
+    response = client.get("/logout")
+    assert response.status_code == 303
+    assert client.get("/identity").status_code == 401
