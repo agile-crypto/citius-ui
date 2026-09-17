@@ -15,6 +15,13 @@ from citius_ui.config import AppConfig
 from citius_ui.grpc_client.client import CitiusClients
 from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.workbench.actions import build_registry, registry_overview
+from citius_ui.workbench.history_view import (
+    ACTIVITY_HEADERS,
+    PRODUCER_HEADERS,
+    activity_rows,
+    latest_consumer_handoff,
+    producer_rows,
+)
 
 _AVAILABILITY_BADGE = {
     Availability.AVAILABLE: "🟢 Available",
@@ -92,20 +99,29 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
     def _example(service: str, method: str) -> str:
         return json.dumps(REQUEST_EXAMPLES.get((service, method), {}), indent=2)
 
-    def _run(request: gr.Request, service: str, method: str, request_json: str) -> tuple[str, str]:
+    def _run(
+        request: gr.Request, service: str, method: str, request_json: str
+    ) -> tuple[str, str, list[list[str]], list[list[str]]]:
         session = sessions.get(request.cookies.get(config.session_cookie_name))
         if session is None:
-            return "UNAUTHENTICATED", "No active session. Sign in again."
+            return "UNAUTHENTICATED", "No active session. Sign in again.", [], []
+        activity = activity_rows(history, session.history_id)
+        producers = producer_rows(history, session.history_id)
         try:
             payload = json.loads(request_json or "{}")
         except json.JSONDecodeError as exc:
-            return "INVALID_ARGUMENT", f"Request is not valid JSON: {exc}"
+            return "INVALID_ARGUMENT", f"Request is not valid JSON: {exc}", activity, producers
 
         clients = CitiusClients(config, sessions.token_provider(session.id))
         registry = build_registry(clients)
         action = registry.get(service, method)
         if action.availability is not Availability.AVAILABLE:
-            return action.availability.value.upper(), _AVAILABILITY_BADGE[action.availability]
+            return (
+                action.availability.value.upper(),
+                _AVAILABILITY_BADGE[action.availability],
+                activity,
+                producers,
+            )
 
         executor = ActionExecutor(history)
         context = ExecutionContext(
@@ -123,7 +139,13 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
             finally:
                 await clients.close()
 
-        return asyncio.run(_execute())
+        status, response = asyncio.run(_execute())
+        return (
+            status,
+            response,
+            activity_rows(history, session.history_id),
+            producer_rows(history, session.history_id),
+        )
 
     with gr.Blocks(
         title="Citius API Workbench",
@@ -182,6 +204,36 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
                 status_box = gr.Textbox(label="Status", interactive=False)
                 response_box = gr.Code(language="json", label="Response", interactive=False)
 
+        gr.HTML(
+            "<div class='section-title'><h2>Previous producer responses</h2></div>",
+            padding=False,
+        )
+        gr.Markdown(
+            "Successful Sign, DigestSign, and Encrypt responses appear here with a "
+            "copyable value-plus-metadata bundle. Reuse the newest one to prefill "
+            "Verify or Decrypt, replaying its recorded key version."
+        )
+        producer_table = gr.Dataframe(
+            headers=PRODUCER_HEADERS,
+            col_count=(len(PRODUCER_HEADERS), "fixed"),
+            interactive=False,
+            wrap=True,
+            label="Producer responses",
+        )
+        reuse_btn = gr.Button("Reuse latest producer response ↴")
+
+        gr.HTML(
+            "<div class='section-title'><h2>Session activity</h2></div>",
+            padding=False,
+        )
+        activity_table = gr.Dataframe(
+            headers=ACTIVITY_HEADERS,
+            col_count=(len(ACTIVITY_HEADERS), "fixed"),
+            interactive=False,
+            wrap=True,
+            label="Session activity",
+        )
+
         def _identity(request: gr.Request) -> str:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
@@ -201,13 +253,38 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
         def _on_method(service: str, method: str) -> str:
             return _example(service, method)
 
+        def _load_activity(request: gr.Request) -> tuple[list[list[str]], list[list[str]]]:
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is None:
+                return [], []
+            return (
+                activity_rows(history, session.history_id),
+                producer_rows(history, session.history_id),
+            )
+
+        def _reuse(request: gr.Request) -> tuple[Any, Any, str]:
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is None:
+                return gr.update(), gr.update(), "{}"
+            handoff = latest_consumer_handoff(history, session.history_id)
+            if handoff is None:
+                return gr.update(), gr.update(), "{}"
+            service, method, request_json = handoff
+            return (
+                gr.update(value=service),
+                gr.update(choices=[m for m, _ in grouped[service]], value=method),
+                request_json,
+            )
+
         blocks.load(_identity, outputs=identity_banner)
+        blocks.load(_load_activity, outputs=[activity_table, producer_table])
         service_dd.change(_on_service, inputs=service_dd, outputs=[method_dd, request_box])
         method_dd.change(_on_method, inputs=[service_dd, method_dd], outputs=request_box)
         run_btn.click(
             _run,
             inputs=[service_dd, method_dd, request_box],
-            outputs=[status_box, response_box],
+            outputs=[status_box, response_box, activity_table, producer_table],
         )
+        reuse_btn.click(_reuse, outputs=[service_dd, method_dd, request_box])
 
     return blocks
