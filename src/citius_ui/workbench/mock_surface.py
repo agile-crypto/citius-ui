@@ -2,11 +2,12 @@
 
 This module renders the reference UI's structure so we can evaluate it before
 committing to it in the SDK-wired Workbench. Each service is a collapsible
-accordion. Opening a service reveals a selector listing its RPCs; choosing an
-RPC shows that RPC's form. Fields mirror the Citius protobuf request messages in
-api/proto: common scalar fields are exposed directly, policy and document fields
-use resizable text areas, and the mutually-exclusive scope/context parameters
-stay behind a collapsed advanced JSON editor.
+accordion; every RPC is its own nested accordion listing all RPCs and letting
+each open or collapse independently. Fields mirror the Citius protobuf request
+messages in api/proto: common scalar fields are exposed directly, policy and
+document fields use resizable text areas, mutually-exclusive scope/context
+parameters stay behind a collapsed advanced JSON editor, and clickable examples
+prefill the individual fields.
 
 It performs no cryptography and makes no gRPC or OIDC calls; it exists only to
 compare layouts and decide how far to expose the API surface per RPC.
@@ -24,8 +25,6 @@ CSS = """
                    box-shadow: 0 4px 8px rgba(0, 0, 0, .10); }
 .title-container h1 { color: #17233b; font-size: 2.2rem; margin: 0 0 8px; }
 .title-container p { color: #263a5d; margin: 0; }
-.section-title { border-left: 5px solid #6d83f2; padding: 6px 12px; margin: 18px 0 8px; }
-.section-title h2 { font-size: 1.15rem; margin: 0; }
 .mock-note { border-left: 4px solid #d8a400; padding: 8px 12px; margin-bottom: 12px; }
 footer { visibility: hidden; }
 """
@@ -45,16 +44,18 @@ class Field:
 
 @dataclass(frozen=True, slots=True)
 class RpcForm:
-    """A single RPC's form: its request fields and whether it produces artifacts."""
+    """A single RPC's form: request fields, examples, and artifact output."""
 
     method: str
     action_label: str
     fields: tuple[Field, ...]
+    examples: tuple[tuple[object, ...], ...] = ()
     produces: str = ""  # "" | Signature | Ciphertext
     advanced: str = ""  # JSON hint for scope/context params
 
 
 _POLICY_DOC = Field("policy_document", "Policy document", kind="area", placeholder="version: v1 …")
+_SAMPLE_POLICY = "version: v1\nallowed_operations: [SIGN, VERIFY]\nallowed_templates: [ecdsa-p256-sha256]"
 
 SERVICES: dict[str, tuple[RpcForm, ...]] = {
     "Crypto Policy · CryptoPolicyService": (
@@ -66,11 +67,16 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 _POLICY_DOC,
                 Field("format", "Format", kind="dropdown", choices=("json", "rego", "cedar", "yaml"), optional=True),
             ),
+            examples=(
+                ("demo-signing-policy", _SAMPLE_POLICY, "yaml"),
+                ("demo-restricted-policy", "version: v1\nallowed_operations: [VERIFY]", "yaml"),
+            ),
         ),
         RpcForm(
             "ReadCryptoPolicy",
             "Read",
             (Field("name", "Policy name", placeholder="demo-signing-policy"),),
+            examples=(("demo-signing-policy",),),
         ),
         RpcForm(
             "UpdateCryptoPolicy",
@@ -81,6 +87,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("format", "Format", kind="dropdown", choices=("json", "rego", "cedar", "yaml"), optional=True),
                 Field("expected_version", "Expected version", kind="number", optional=True),
             ),
+            examples=(("demo-signing-policy", _SAMPLE_POLICY + "\nmax_key_age_days: 90", "yaml", 1),),
         ),
     ),
     "Key Management · KeyManagementService": (
@@ -93,6 +100,10 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("template_id", "Template ID", placeholder="ecdsa-p256-sha256", optional=True),
                 Field("provider_id", "Provider ID", placeholder="software", optional=True),
             ),
+            examples=(
+                ("demo-signing-key", "demo-signing-policy", "ecdsa-p256-sha256", "software"),
+                ("demo-encryption-key", "demo-signing-policy", "aes-256-gcm", "software"),
+            ),
             advanced='{\n  "scope_spec": {},\n  "provider_requirements": {},\n  "provider_configuration": {}\n}',
         ),
         RpcForm(
@@ -102,6 +113,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("name", "Key name", placeholder="demo-signing-key"),
                 Field("version", "Version", kind="number", optional=True),
             ),
+            examples=(("demo-signing-key", None),),
         ),
         RpcForm(
             "TransformKey",
@@ -111,6 +123,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("template_id", "Template ID", placeholder="ml-dsa-65", optional=True),
                 Field("retain_key_bytes", "Retain key bytes", kind="bool"),
             ),
+            examples=(("demo-signing-key", "ml-dsa-65", False),),
             advanced='{\n  "scope_spec": {}\n}',
         ),
     ),
@@ -122,6 +135,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("key_name", "Key name", placeholder="demo-signing-key"),
                 Field("input", "Input (message)", kind="area", placeholder="Hello from Citius"),
             ),
+            examples=(("demo-signing-key", "Hello from Citius"),),
             produces="Signature",
             advanced='{\n  "no_context": {}\n}',
         ),
@@ -134,6 +148,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("signature", "Signature (base64)", kind="area"),
                 Field("metadata", "Operation metadata (JSON)", kind="area"),
             ),
+            examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}'),),
             advanced='{\n  "no_context": {}\n}',
         ),
         RpcForm(
@@ -143,6 +158,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("key_name", "Key name", placeholder="demo-encryption-key"),
                 Field("plaintext", "Plaintext", kind="area", placeholder="Sensitive demo payload"),
             ),
+            examples=(("demo-encryption-key", "Sensitive demo payload"),),
             produces="Ciphertext",
             advanced='{\n  "no_params": {}\n}',
         ),
@@ -154,6 +170,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("ciphertext", "Ciphertext (base64)", kind="area"),
                 Field("metadata", "Operation metadata (JSON)", kind="area"),
             ),
+            examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}'),),
             advanced='{\n  "no_params": {}\n}',
         ),
         RpcForm(
@@ -164,6 +181,7 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("digest", "Digest (base64)", kind="area"),
                 Field("hash_algorithm", "Hash algorithm", optional=True),
             ),
+            examples=(("demo-signing-key", "<paste digest>", "SHA-256"),),
             produces="Signature",
         ),
         RpcForm(
@@ -176,30 +194,28 @@ SERVICES: dict[str, tuple[RpcForm, ...]] = {
                 Field("metadata", "Operation metadata (JSON)", kind="area"),
                 Field("hash_algorithm", "Hash algorithm", optional=True),
             ),
+            examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "SHA-256"),),
         ),
     ),
 }
 
 
-def _render_field(spec: Field) -> None:
+def _render_field(spec: Field) -> gr.components.Component:
     label = f"{spec.label} (optional)" if spec.optional else spec.label
     if spec.kind == "area":
-        gr.Textbox(label=label, placeholder=spec.placeholder, lines=4, max_lines=20)
-    elif spec.kind == "number":
-        gr.Number(label=label)
-    elif spec.kind == "bool":
-        gr.Checkbox(label=label)
-    elif spec.kind == "dropdown":
-        gr.Dropdown(label=label, choices=list(spec.choices), allow_custom_value=True)
-    else:
-        gr.Textbox(label=label, placeholder=spec.placeholder)
+        return gr.Textbox(label=label, placeholder=spec.placeholder, lines=4, max_lines=20)
+    if spec.kind == "number":
+        return gr.Number(label=label)
+    if spec.kind == "bool":
+        return gr.Checkbox(label=label)
+    if spec.kind == "dropdown":
+        return gr.Dropdown(label=label, choices=list(spec.choices), allow_custom_value=True)
+    return gr.Textbox(label=label, placeholder=spec.placeholder)
 
 
-def _render_rpc_form(form: RpcForm, visible: bool) -> gr.Group:
-    with gr.Group(visible=visible) as group:
-        gr.Markdown(f"**{form.method}** — request fields mirror `api/proto`.")
-        for spec in form.fields:
-            _render_field(spec)
+def _render_rpc_accordion(form: RpcForm) -> None:
+    with gr.Accordion(form.method, open=False):
+        inputs = [_render_field(spec) for spec in form.fields]
         if form.advanced:
             with gr.Accordion("Advanced scope/context parameters (JSON)", open=False):
                 gr.Code(value=form.advanced, language="json", label="Advanced request overrides")
@@ -208,6 +224,7 @@ def _render_rpc_form(form: RpcForm, visible: bool) -> gr.Group:
             clear = gr.Button("Clear", variant="secondary")
         with gr.Accordion("Output", open=True, visible=False) as output_row:
             gr.JSON(label="Response")
+            history = None
             if form.produces:
                 gr.Textbox(label=f"Current {form.produces}", max_lines=4)
                 history = gr.Dataframe(
@@ -217,13 +234,18 @@ def _render_rpc_form(form: RpcForm, visible: bool) -> gr.Group:
                     interactive=False,
                     wrap=True,
                 )
-                clear.click(lambda: [], outputs=history)
+        if form.examples:
+            with gr.Accordion("Examples", open=True):
+                gr.Examples(examples=[list(example) for example in form.examples], inputs=inputs)
         run.click(lambda: gr.update(visible=True), outputs=output_row)
-    return group
+        clear_outputs = [*inputs]
+        if history is not None:
+            clear.click(lambda: [], outputs=history)
+        clear.click(lambda: [None for _ in clear_outputs], outputs=clear_outputs)
 
 
 def build_mock_surface() -> gr.Blocks:
-    """Build the reference-style per-RPC decision-aid mock with service accordions."""
+    """Build the reference-style mock with nested service and per-RPC accordions."""
     with gr.Blocks(
         title="Citius Workbench · per-RPC layout mock",
         theme=gr.themes.Base(font=["IBM Plex Sans", "Arial", "sans-serif"]),
@@ -232,31 +254,23 @@ def build_mock_surface() -> gr.Blocks:
     ) as blocks:
         gr.HTML(
             "<div class='title-container'><h1>Citius API Workbench — layout mock</h1>"
-            "<p>Open a service, pick an RPC, and edit its fields. No cryptography, "
-            "gRPC, or auth is performed.</p></div>",
+            "<p>Open a service, then open an RPC to edit its fields and run it. No "
+            "cryptography, gRPC, or auth is performed.</p></div>",
             padding=False,
         )
         gr.HTML(
-            "<div class='mock-note'><strong>Decision aid:</strong> common fields are "
-            "exposed directly and mirror api/proto; document fields are resizable; "
-            "scope/context parameters stay behind an advanced JSON editor. History "
-            "lives inside the producing RPC and clears per RPC.</div>",
+            "<div class='mock-note'><strong>Decision aid:</strong> services and RPCs "
+            "are collapsible accordions; common fields mirror api/proto and document "
+            "fields are resizable; scope/context parameters stay behind an advanced "
+            "JSON editor; examples prefill the fields. History lives inside the "
+            "producing RPC and clears per RPC.</div>",
             padding=False,
         )
 
         for service_label, forms in SERVICES.items():
             with gr.Accordion(service_label, open=False):
-                selector = gr.Radio(
-                    choices=[form.method for form in forms],
-                    value=forms[0].method,
-                    label="RPC",
-                )
-                groups = [_render_rpc_form(form, visible=(index == 0)) for index, form in enumerate(forms)]
-
-                def _select(chosen: str, forms: tuple[RpcForm, ...] = forms) -> list[dict[str, object]]:
-                    return [gr.update(visible=(form.method == chosen)) for form in forms]
-
-                selector.change(_select, inputs=selector, outputs=groups)
+                for form in forms:
+                    _render_rpc_accordion(form)
 
     return blocks
 
