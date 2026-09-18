@@ -199,14 +199,85 @@ def _scope_spec(scope: str) -> common_types.ScopeSpecification:
     raise RequestError(f"unsupported scope {scope!r} (supported: {', '.join(KEY_SCOPES)})")
 
 
+# Scope-parameter oneof arms per crypto request family. user_context is a plain
+# map field that may accompany any arm.
+SIGNATURE_SCOPE_PARAM_KEYS = frozenset({"no_context", "domain_context", "vendor_context", "user_context"})
+DIGEST_SCOPE_PARAM_KEYS = SIGNATURE_SCOPE_PARAM_KEYS | {"hash_algorithm", "hash_algorithm_oid"}
+ENCRYPTION_SCOPE_PARAM_KEYS = frozenset(
+    {"no_params", "aead_params", "xts_params", "asymmetric_params", "vendor_params", "user_context"}
+)
+
+
+def _scope_params_dict(request: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any] | None:
+    """Parse and validate the optional 'scope_params' request field."""
+    raw = request.get("scope_params")
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RequestError(f"'scope_params' is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RequestError("'scope_params' must be a JSON object")
+    unknown = set(raw) - allowed
+    if unknown:
+        raise RequestError(f"unknown scope parameter(s) {sorted(unknown)}; supported for this RPC: {sorted(allowed)}")
+    return raw
+
+
+def _apply_scope_params(built: Any, request: dict[str, Any], *, allowed: frozenset[str], default_arm: str) -> None:
+    """Set the request's scope_params oneof from the optional request field.
+
+    The server requires one arm of the oneof to be set. When 'scope_params' is
+    absent, ``default_arm`` (matching the scope the Workbench creates keys
+    with) is selected; when present, its keys are merged onto the request
+    proto, so e.g. {"aead_params": {"aad": "<base64>"}} or
+    {"domain_context": {"context": "<base64>"}} selects and populates an arm.
+    """
+    params = _scope_params_dict(request, allowed)
+    if params is None:
+        getattr(built, default_arm).SetInParent()
+        return
+    try:
+        ParseDict(params, built, ignore_unknown_fields=False)
+    except ParseError as exc:
+        raise RequestError(f"'scope_params' does not match the request schema: {exc}") from exc
+    if built.WhichOneof("scope_params") is None:
+        getattr(built, default_arm).SetInParent()
+
+
 def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
     """Resolve the key scope the server requires on Create/TransformKey.
 
     The server rejects key creation without a scope specification even when a
     template is given, and the template must match the scope. An explicit
-    'scope' request field wins; otherwise the scope is inferred from the
+    'scope_spec' JSON object wins (full ScopeSpecification control, e.g.
+    security properties or primitives the shorthand does not cover), then an
+    explicit 'scope' shorthand; otherwise the scope is inferred from the
     template id.
     """
+    spec_json = request.get("scope_spec")
+    if spec_json not in (None, ""):
+        if isinstance(spec_json, str):
+            try:
+                spec_json = json.loads(spec_json)
+            except json.JSONDecodeError as exc:
+                raise RequestError(f"'scope_spec' is not valid JSON: {exc}") from exc
+        if not isinstance(spec_json, dict):
+            raise RequestError("'scope_spec' must be a JSON object")
+        try:
+            spec: common_types.ScopeSpecification = ParseDict(
+                spec_json, common_types.ScopeSpecification(), ignore_unknown_fields=False
+            )
+        except ParseError as exc:
+            raise RequestError(f"'scope_spec' does not match the ScopeSpecification schema: {exc}") from exc
+        if spec.WhichOneof("scope_spec") is None:
+            raise RequestError(
+                "'scope_spec' must set one scope arm, e.g. "
+                '{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}} or {"aead": {"scope": "AEAD_SCOPE_STANDARD"}}'
+            )
+        return spec
     scope = str(request.get("scope") or "").strip()
     if scope:
         return _scope_spec(scope)
@@ -291,7 +362,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             )
             # The server requires the scope_params oneof; default to standard
             # AEAD parameters, matching the aead key scope the Workbench creates.
-            built.aead_params.SetInParent()
+            _apply_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
             result = await clients.crypto.encrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -319,7 +390,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             built = sdk_crypto.sign_request(_require_text(request, "key_name"), _as_bytes(_require(request, "message")))
             # The server requires the scope_params oneof; no_context selects
             # the standard signature scope the Workbench creates keys with.
-            built.no_context.SetInParent()
+            _apply_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -350,7 +421,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "ciphertext"),
                 _metadata_proto(request.get("metadata")),
             )
-            built.aead_params.SetInParent()
+            _apply_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
             result = await clients.crypto.decrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -367,7 +438,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
             )
-            built.no_context.SetInParent()
+            _apply_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.verify(built)
         except CitiusError as error:
             return error_result(error)
@@ -376,7 +447,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def digest_sign(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.digest_sign_request(_require_text(request, "key_name"), _base64_field(request, "digest"))
-            built.no_context.SetInParent()
+            _apply_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.digest_sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -394,7 +465,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
             )
-            built.no_context.SetInParent()
+            _apply_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.digest_verify(built)
         except CitiusError as error:
             return error_result(error)

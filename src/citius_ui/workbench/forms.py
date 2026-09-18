@@ -144,10 +144,17 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 choices=_KEY_SCOPES,
                 optional=True,
             ),
+            FormField(
+                "scope_spec",
+                "Scope specification (JSON, overrides scope)",
+                kind="area",
+                placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
+                optional=True,
+            ),
         ),
         examples=(
-            ("demo-signing-key", "demo-signing-policy", "ecdsa-p256-sha256-der", "software", "signature"),
-            ("demo-encryption-key", "demo-encryption-policy", "aes-256-gcm-128-96", "software", "aead"),
+            ("demo-signing-key", "demo-signing-policy", "ecdsa-p256-sha256-der", "software", "signature", ""),
+            ("demo-encryption-key", "demo-encryption-policy", "aes-256-gcm-128-96", "software", "aead", ""),
         ),
     ),
     RpcFormSpec(
@@ -175,8 +182,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 choices=_KEY_SCOPES,
                 optional=True,
             ),
+            FormField(
+                "scope_spec",
+                "Scope specification (JSON, overrides scope)",
+                kind="area",
+                placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
+                optional=True,
+            ),
         ),
-        examples=(("demo-signing-key", "ml-dsa-65", False, "signature"),),
+        examples=(("demo-signing-key", "ml-dsa-65", False, "signature", ""),),
     ),
     RpcFormSpec(
         "CryptoService",
@@ -185,8 +199,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
+            FormField(
+                "scope_params",
+                "Scope parameters (JSON, optional)",
+                kind="area",
+                placeholder='{"no_context": {}} or {"domain_context": {"context": "<base64>"}}',
+                optional=True,
+            ),
         ),
-        examples=(("demo-signing-key", "Hello from Citius"),),
+        examples=(("demo-signing-key", "Hello from Citius", ""),),
         produces="Signature",
     ),
     RpcFormSpec(
@@ -198,8 +219,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
             FormField("signature", "Signature (base64)", kind="area"),
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
+            FormField(
+                "scope_params",
+                "Scope parameters (JSON, optional)",
+                kind="area",
+                placeholder='{"no_context": {}} or {"domain_context": {"context": "<base64>"}}',
+                optional=True,
+            ),
         ),
-        examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}'),),
+        examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', ""),),
     ),
     RpcFormSpec(
         "CryptoService",
@@ -208,8 +236,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-encryption-key"),
             FormField("plaintext", "Plaintext", kind="area", placeholder="Sensitive demo payload"),
+            FormField(
+                "scope_params",
+                "Scope parameters (JSON, optional)",
+                kind="area",
+                placeholder='{"aead_params": {"aad": "<base64>"}} or {"no_params": {}}',
+                optional=True,
+            ),
         ),
-        examples=(("demo-encryption-key", "Sensitive demo payload"),),
+        examples=(("demo-encryption-key", "Sensitive demo payload", ""),),
         produces="Ciphertext",
     ),
     RpcFormSpec(
@@ -220,8 +255,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("key_name", "Key name", placeholder="demo-encryption-key"),
             FormField("ciphertext", "Ciphertext (base64)", kind="area"),
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
+            FormField(
+                "scope_params",
+                "Scope parameters (JSON, optional)",
+                kind="area",
+                placeholder='{"aead_params": {"aad": "<base64>"}} or {"no_params": {}}',
+                optional=True,
+            ),
         ),
-        examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}'),),
+        examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', ""),),
     ),
     RpcFormSpec(
         "CryptoService",
@@ -230,8 +272,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
             FormField("digest", "Digest (base64)", kind="area"),
+            FormField(
+                "scope_params",
+                "Scope parameters (JSON, optional)",
+                kind="area",
+                placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
+                optional=True,
+            ),
         ),
-        examples=(("demo-signing-key", "<paste digest>"),),
+        examples=(("demo-signing-key", "<paste digest>", ""),),
         produces="Signature",
     ),
     RpcFormSpec(
@@ -243,8 +292,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("digest", "Digest (base64)", kind="area"),
             FormField("signature", "Signature (base64)", kind="area"),
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
+            FormField(
+                "scope_params",
+                "Scope parameters (JSON, optional)",
+                kind="area",
+                placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
+                optional=True,
+            ),
         ),
-        examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}'),),
+        examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', ""),),
     ),
 )
 
@@ -270,7 +326,7 @@ def build_request(spec: RpcFormSpec, values: list[object]) -> dict[str, object]:
             value = value.strip()
         if value is None or value == "":
             continue
-        if spec_field.key == "metadata" and isinstance(value, str):
+        if spec_field.key in ("metadata", "scope_params", "scope_spec") and isinstance(value, str):
             try:
                 parsed = json.loads(value)
             except json.JSONDecodeError as exc:

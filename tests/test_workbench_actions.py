@@ -191,3 +191,77 @@ def test_key_scope_spec_requires_scope_when_uninferable() -> None:
         _key_scope_spec({"template_id": "hkdf-sha256"})
     with pytest.raises(RequestError, match="unsupported scope"):
         _key_scope_spec({"scope": "teleport"})
+
+
+def _sign_request_proto() -> object:
+    from citius_sdk.services.crypto import SignRequest
+
+    return SignRequest(key_name="k", input=b"m")
+
+
+def test_apply_scope_params_defaults_to_no_context() -> None:
+    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _apply_scope_params
+
+    built = _sign_request_proto()
+    _apply_scope_params(built, {}, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
+    assert built.WhichOneof("scope_params") == "no_context"
+
+
+def test_apply_scope_params_selects_domain_context() -> None:
+    import base64 as b64
+
+    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _apply_scope_params
+
+    built = _sign_request_proto()
+    context = b64.b64encode(b"tenant-a").decode()
+    request = {"scope_params": f'{{"domain_context": {{"context": "{context}"}}}}'}
+    _apply_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
+    assert built.WhichOneof("scope_params") == "domain_context"
+    assert built.domain_context.context == b"tenant-a"
+
+
+def test_apply_scope_params_sets_aead_aad() -> None:
+    import base64 as b64
+
+    from citius_sdk.services.crypto import EncryptRequest
+
+    from citius_ui.workbench.actions import ENCRYPTION_SCOPE_PARAM_KEYS, _apply_scope_params
+
+    built = EncryptRequest(key_name="k", plaintext=b"p")
+    aad = b64.b64encode(b"header").decode()
+    request = {"scope_params": {"aead_params": {"aad": aad}}}
+    _apply_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
+    assert built.WhichOneof("scope_params") == "aead_params"
+    assert built.aead_params.aad == b"header"
+
+
+def test_apply_scope_params_rejects_unknown_and_invalid() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _apply_scope_params
+
+    built = _sign_request_proto()
+
+    def apply(scope_params: object) -> None:
+        _apply_scope_params(
+            built, {"scope_params": scope_params}, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context"
+        )
+
+    with pytest.raises(RequestError, match="unknown scope parameter"):
+        apply({"aead_params": {}})
+    with pytest.raises(RequestError, match="not valid JSON"):
+        apply("{bad")
+    with pytest.raises(RequestError, match="does not match the request schema"):
+        apply({"domain_context": {"nope": 1}})
+
+
+def test_key_scope_spec_accepts_full_scope_spec_json() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    spec = _key_scope_spec({"scope_spec": '{"aead": {"scope": "AEAD_SCOPE_STANDARD"}}'})
+    assert spec.WhichOneof("scope_spec") == "aead"
+    # The explicit spec overrides both the shorthand and template inference.
+    spec = _key_scope_spec({"scope_spec": {"signature": {}}, "scope": "aead", "template_id": "aes-256-gcm-128-96"})
+    assert spec.WhichOneof("scope_spec") == "signature"
+    with pytest.raises(RequestError, match="must set one scope arm"):
+        _key_scope_spec({"scope_spec": "{}"})
