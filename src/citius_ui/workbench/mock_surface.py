@@ -19,34 +19,58 @@ from dataclasses import dataclass
 
 import gradio as gr
 
+# Light values on :root, dark overrides on `:root .dark` (the selector Gradio
+# uses for its own theme variables), so the mock follows the OS/?__theme mode.
 CSS = """
-:root { --citius-ink: #3a4a7a; --citius-accent: #8aa0e0; --citius-soft: #eef2fb; }
+:root {
+  --citius-ink: #2f3d6b; --citius-ink-soft: #56628c; --citius-accent: #8aa0e0;
+  --citius-banner-start: #dbe4fb; --citius-banner-end: #eef2fb;
+  --citius-header-bg: #dbe4fb; --citius-header-ink: #2f3d6b;
+  --citius-surface: #fbfcff; --citius-surface-open: #f2f5fe; --citius-rpc-ink: #46527f;
+  --citius-border: #e6ebf7; --citius-border-idle: #d6ddf0; --citius-ring: #e0e7f8;
+  --citius-warn-bg: #fffdf3; --citius-warn-border: #e3c86b; --citius-warn-ink: #5a5330;
+  --citius-shadow: rgba(120, 140, 200, .18); --citius-shadow-soft: rgba(120, 140, 200, .16);
+}
+:root .dark {
+  --citius-ink: #cdd7f5; --citius-ink-soft: #93a1cc;
+  --citius-banner-start: #252e4d; --citius-banner-end: #1a2138;
+  --citius-header-bg: #27334f; --citius-header-ink: #cdd7f5;
+  --citius-surface: #1b2234; --citius-surface-open: #222c48; --citius-rpc-ink: #aab8e0;
+  --citius-border: #2e3a5c; --citius-border-idle: #3a4666; --citius-ring: #34406a;
+  --citius-warn-bg: #2a2617; --citius-warn-border: #a08c3c; --citius-warn-ink: #cabd7e;
+  --citius-shadow: rgba(0, 0, 0, .35); --citius-shadow-soft: rgba(0, 0, 0, .30);
+}
 .title-container { text-align: center; margin: 8px 0 18px; padding: 26px;
-                   background: linear-gradient(135deg, #dbe4fb, #eef2fb);
-                   border-radius: 14px; box-shadow: 0 4px 16px rgba(120, 140, 200, .18); }
-.title-container h1 { color: #2f3d6b; font-size: 2.1rem; margin: 0 0 8px; letter-spacing: .3px; }
-.title-container p { color: #56628c; margin: 0; }
-.mock-note { border-left: 4px solid #e3c86b; background: #fffdf3; padding: 10px 14px;
-             margin-bottom: 16px; border-radius: 0 8px 8px 0; color: #5a5330; }
+                   background: linear-gradient(135deg, var(--citius-banner-start), var(--citius-banner-end));
+                   border-radius: 14px; box-shadow: 0 4px 16px var(--citius-shadow); }
+.title-container h1 { color: var(--citius-ink); font-size: 2.1rem; margin: 0 0 8px; letter-spacing: .3px; }
+.title-container p { color: var(--citius-ink-soft); margin: 0; }
+.mock-note { border-left: 4px solid var(--citius-warn-border); background: var(--citius-warn-bg);
+             padding: 10px 14px; margin-bottom: 16px; border-radius: 0 8px 8px 0;
+             color: var(--citius-warn-ink); }
 
 /* Parent (service) accordion: soft blue header. */
 .service-accordion { border: 0 !important; margin: 14px 0 !important; }
 .service-accordion > button, .service-accordion > .label-wrap {
-    background: #dbe4fb !important; color: #2f3d6b !important;
+    background: var(--citius-header-bg) !important; color: var(--citius-header-ink) !important;
     font-size: 1.05rem !important; font-weight: 700 !important;
     border-radius: 10px !important; padding: 14px 18px !important;
-    box-shadow: 0 2px 8px rgba(120, 140, 200, .16) !important; }
-.service-accordion > button span, .service-accordion > .label-wrap span { color: #2f3d6b !important; }
+    box-shadow: 0 2px 8px var(--citius-shadow-soft) !important; }
+.service-accordion > button span, .service-accordion > .label-wrap span {
+    color: var(--citius-header-ink) !important; }
 
 /* Child (RPC) accordion: pale card with a soft left accent that brightens when open. */
 .rpc-accordion { margin: 8px 0 8px 14px !important;
-                 border: 1px solid #e6ebf7 !important; border-left: 4px solid #d6ddf0 !important;
-                 border-radius: 8px !important; background: #fbfcff !important; }
+                 border: 1px solid var(--citius-border) !important;
+                 border-left: 4px solid var(--citius-border-idle) !important;
+                 border-radius: 8px !important; background: var(--citius-surface) !important; }
 .rpc-accordion > button, .rpc-accordion > .label-wrap {
-    font-weight: 600 !important; color: #46527f !important; padding: 10px 14px !important; }
+    font-weight: 600 !important; color: var(--citius-rpc-ink) !important; padding: 10px 14px !important; }
 .rpc-accordion.rpc-open { border-left: 4px solid var(--citius-accent) !important;
-                          background: #f2f5fe !important; box-shadow: inset 0 0 0 1px #e0e7f8 !important; }
-.rpc-accordion.rpc-open > button, .rpc-accordion.rpc-open > .label-wrap { color: #2f3d6b !important; }
+                          background: var(--citius-surface-open) !important;
+                          box-shadow: inset 0 0 0 1px var(--citius-ring) !important; }
+.rpc-accordion.rpc-open > button, .rpc-accordion.rpc-open > .label-wrap {
+    color: var(--citius-ink) !important; }
 
 footer { visibility: hidden; }
 """

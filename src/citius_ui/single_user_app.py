@@ -24,13 +24,24 @@ from citius_ui.mock_engine import (
     request_example,
 )
 
+# Light values on :root, dark overrides on `:root .dark` (the selector Gradio
+# uses for its own theme variables), so the mock follows the OS/?__theme mode.
 CSS = """
+:root {
+  --citius-banner-bg: #a4c2f4; --citius-banner-ink: #17233b; --citius-banner-sub: #263a5d;
+  --citius-banner-rule: #ffffff; --citius-banner-shadow: rgba(0, 0, 0, .10);
+}
+:root .dark {
+  --citius-banner-bg: #2b3a63; --citius-banner-ink: #e6ecfb; --citius-banner-sub: #aebbe2;
+  --citius-banner-rule: #55679a; --citius-banner-shadow: rgba(0, 0, 0, .40);
+}
 .title-container { text-align: center; margin: 12px 0 18px; padding: 24px;
-                   background: #a4c2f4; border-radius: 10px;
-                   box-shadow: 0 4px 8px rgba(0, 0, 0, .10); }
-.title-container h1 { color: #17233b; font-size: 2.35rem; margin: 0 0 8px; }
-.title-container p { color: #263a5d; font-size: 1rem; margin: 0; }
-.title-container hr { width: 80%; height: 2px; background: #ffffff; border: 0; margin: 12px auto; }
+                   background: var(--citius-banner-bg); border-radius: 10px;
+                   box-shadow: 0 4px 8px var(--citius-banner-shadow); }
+.title-container h1 { color: var(--citius-banner-ink); font-size: 2.35rem; margin: 0 0 8px; }
+.title-container p { color: var(--citius-banner-sub); font-size: 1rem; margin: 0; }
+.title-container hr { width: 80%; height: 2px; background: var(--citius-banner-rule);
+                      border: 0; margin: 12px auto; }
 .section-title { border-left: 5px solid #6d83f2; padding: 6px 12px; margin: 18px 0 10px; }
 .section-title h2 { font-size: 1.2rem; margin: 0; }
 .mock-note { border-left: 4px solid #d8a400; padding: 8px 12px; margin-bottom: 14px; }

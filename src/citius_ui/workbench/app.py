@@ -47,31 +47,54 @@ _CONSUMER_HINT = {
     "Encrypt": "Decrypt",
 }
 
+# Light values live on :root and dark overrides on `:root .dark`, mirroring how
+# Gradio scopes its own theme variables, so both flip together whether the mode
+# comes from the OS preference or a forced ?__theme= query parameter.
 CSS = """
-:root { --citius-ink: #2f3d6b; --citius-accent: #8aa0e0; }
+:root {
+  --citius-ink: #2f3d6b; --citius-ink-soft: #56628c; --citius-accent: #8aa0e0;
+  --citius-banner-start: #dbe4fb; --citius-banner-end: #eef2fb;
+  --citius-header-bg: #dbe4fb; --citius-header-ink: #2f3d6b;
+  --citius-surface: #fbfcff; --citius-surface-open: #f2f5fe; --citius-rpc-ink: #46527f;
+  --citius-border: #e6ebf7; --citius-border-idle: #d6ddf0; --citius-ring: #e0e7f8;
+  --citius-note-bg: #f4faf4; --citius-note-border: #7aa37a; --citius-note-ink: #37533a;
+  --citius-shadow: rgba(120, 140, 200, .18); --citius-shadow-soft: rgba(120, 140, 200, .16);
+}
+:root .dark {
+  --citius-ink: #cdd7f5; --citius-ink-soft: #93a1cc;
+  --citius-banner-start: #252e4d; --citius-banner-end: #1a2138;
+  --citius-header-bg: #27334f; --citius-header-ink: #cdd7f5;
+  --citius-surface: #1b2234; --citius-surface-open: #222c48; --citius-rpc-ink: #aab8e0;
+  --citius-border: #2e3a5c; --citius-border-idle: #3a4666; --citius-ring: #34406a;
+  --citius-note-bg: #17251b; --citius-note-border: #5d8c62; --citius-note-ink: #a9c9ac;
+  --citius-shadow: rgba(0, 0, 0, .35); --citius-shadow-soft: rgba(0, 0, 0, .30);
+}
 .title-container { text-align: center; margin: 8px 0 18px; padding: 26px;
-                   background: linear-gradient(135deg, #dbe4fb, #eef2fb);
-                   border-radius: 14px; box-shadow: 0 4px 16px rgba(120, 140, 200, .18); }
-.title-container h1 { color: #2f3d6b; font-size: 2.1rem; margin: 0 0 8px; }
-.title-container p { color: #56628c; margin: 0; }
-.identity-note { border-left: 4px solid #7aa37a; background: #f4faf4; padding: 10px 14px;
-                 border-radius: 0 8px 8px 0; color: #37533a; }
+                   background: linear-gradient(135deg, var(--citius-banner-start), var(--citius-banner-end));
+                   border-radius: 14px; box-shadow: 0 4px 16px var(--citius-shadow); }
+.title-container h1 { color: var(--citius-ink); font-size: 2.1rem; margin: 0 0 8px; }
+.title-container p { color: var(--citius-ink-soft); margin: 0; }
+.identity-note { border-left: 4px solid var(--citius-note-border); background: var(--citius-note-bg);
+                 padding: 10px 14px; border-radius: 0 8px 8px 0; color: var(--citius-note-ink); }
 .service-accordion { border: 0 !important; margin: 8px 0 !important; }
 .service-accordion > button, .service-accordion > .label-wrap {
-    background: #dbe4fb !important; color: #2f3d6b !important;
+    background: var(--citius-header-bg) !important; color: var(--citius-header-ink) !important;
     font-size: 1.05rem !important; font-weight: 700 !important;
     border-radius: 10px !important; padding: 12px 16px !important;
-    box-shadow: 0 2px 8px rgba(120, 140, 200, .16) !important; }
-.service-accordion > button span, .service-accordion > .label-wrap span { color: #2f3d6b !important; }
+    box-shadow: 0 2px 8px var(--citius-shadow-soft) !important; }
+.service-accordion > button span, .service-accordion > .label-wrap span {
+    color: var(--citius-header-ink) !important; }
 .service-body { gap: 6px !important; padding: 6px 4px 2px !important; }
 .workbench-column { gap: 8px !important; }
 .rpc-accordion { margin: 5px 0 !important;
-                 border: 1px solid #e6ebf7 !important; border-left: 4px solid #d6ddf0 !important;
-                 border-radius: 8px !important; background: #fbfcff !important; }
+                 border: 1px solid var(--citius-border) !important;
+                 border-left: 4px solid var(--citius-border-idle) !important;
+                 border-radius: 8px !important; background: var(--citius-surface) !important; }
 .rpc-accordion > button, .rpc-accordion > .label-wrap {
-    font-weight: 600 !important; color: #46527f !important; padding: 9px 13px !important; }
+    font-weight: 600 !important; color: var(--citius-rpc-ink) !important; padding: 9px 13px !important; }
 .rpc-accordion.rpc-open { border-left: 4px solid var(--citius-accent) !important;
-                          background: #f2f5fe !important; box-shadow: inset 0 0 0 1px #e0e7f8 !important; }
+                          background: var(--citius-surface-open) !important;
+                          box-shadow: inset 0 0 0 1px var(--citius-ring) !important; }
 .logout-button { max-width: 140px; align-self: flex-end; }
 footer { visibility: hidden; }
 """

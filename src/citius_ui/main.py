@@ -310,26 +310,45 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
     return app
 
 
+# Light palette on :root with a prefers-color-scheme override, so these plain
+# HTML pages follow the OS mode like the Gradio workbench does.
 _PAGE_STYLE = """
 <style>
-  :root { color-scheme: light; }
-  body { font-family: 'IBM Plex Sans', Arial, sans-serif; background: #eef2fb;
-         margin: 0; padding: 40px 16px; color: #17233b; }
-  .card { max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px;
-          box-shadow: 0 6px 20px rgba(0,0,0,.08); overflow: hidden; }
-  .banner { background: #a4c2f4; padding: 28px 32px; }
-  .banner h1 { margin: 0 0 6px; font-size: 1.9rem; }
-  .banner p { margin: 0; color: #263a5d; }
+  :root {
+    color-scheme: light dark;
+    --page-bg: #eef2fb; --page-ink: #17233b;
+    --card-bg: #ffffff; --card-shadow: rgba(0, 0, 0, .08);
+    --banner-bg: #a4c2f4; --banner-ink: #17233b; --banner-sub: #263a5d;
+    --field-border: #c3cbe0; --field-bg: #ffffff; --field-ink: #17233b;
+    --action: #3b52c4; --accent: #6d83f2; --secondary: #7a869a; --muted: #5b6b8c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #141927; --page-ink: #dbe2f5;
+      --card-bg: #1c2336; --card-shadow: rgba(0, 0, 0, .45);
+      --banner-bg: #2b3a63; --banner-ink: #e6ecfb; --banner-sub: #aebbe2;
+      --field-border: #3a4666; --field-bg: #232c44; --field-ink: #dbe2f5;
+      --action: #9db1f5; --accent: #5b74e8; --secondary: #5c6880; --muted: #8d9bc2;
+    }
+  }
+  body { font-family: 'IBM Plex Sans', Arial, sans-serif; background: var(--page-bg);
+         margin: 0; padding: 40px 16px; color: var(--page-ink); }
+  .card { max-width: 560px; margin: 0 auto; background: var(--card-bg); border-radius: 12px;
+          box-shadow: 0 6px 20px var(--card-shadow); overflow: hidden; }
+  .banner { background: var(--banner-bg); padding: 28px 32px; }
+  .banner h1 { margin: 0 0 6px; font-size: 1.9rem; color: var(--banner-ink); }
+  .banner p { margin: 0; color: var(--banner-sub); }
   .body { padding: 24px 32px; }
   label { display: block; margin: 14px 0 6px; font-weight: 600; }
-  select, input { width: 100%; padding: 10px; border: 1px solid #c3cbe0;
+  select, input { width: 100%; padding: 10px; border: 1px solid var(--field-border);
+                  background: var(--field-bg); color: var(--field-ink);
                   border-radius: 8px; font-size: 1rem; box-sizing: border-box; }
   button { margin-top: 20px; padding: 10px 18px; border: 0; border-radius: 8px;
-           background: #6d83f2; color: #fff; font-size: 1rem; cursor: pointer; }
-  button.secondary { background: #7a869a; }
-  a.action { display: inline-block; margin: 8px 0; color: #3b52c4; font-weight: 600; }
+           background: var(--accent); color: #fff; font-size: 1rem; cursor: pointer; }
+  button.secondary { background: var(--secondary); }
+  a.action { display: inline-block; margin: 8px 0; color: var(--action); font-weight: 600; }
   ul { padding-left: 20px; } li { margin: 2px 0; }
-  .muted { color: #5b6b8c; font-size: .9rem; }
+  .muted { color: var(--muted); font-size: .9rem; }
 </style>
 """
 
