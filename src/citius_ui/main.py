@@ -129,12 +129,28 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             "tls": config.citius_tls_enabled,
         }
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request) -> HTMLResponse:
+    def _start_hosted_login() -> RedirectResponse:
+        assert oidc_config is not None
+        _prune_pending()
+        pkce = create_pkce_challenge()
+        pending_logins[pkce.state] = (pkce, time.monotonic())
+        return RedirectResponse(
+            url=authorization_url(oidc_config, pkce),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @app.get("/")
+    async def index(request: Request) -> Response:
         session = current_session(request)
-        if session is None:
-            return HTMLResponse(_login_page())
-        return HTMLResponse(_identity_page(session))
+        if session is not None:
+            return HTMLResponse(_identity_page(session))
+        if oidc_config is not None:
+            return _start_hosted_login()
+        return HTMLResponse(_login_page())
+
+    @app.get("/dev-login", response_class=HTMLResponse)
+    async def dev_login_page() -> HTMLResponse:
+        return HTMLResponse(_login_page())
 
     @app.post("/dev-login")
     async def dev_login(
@@ -173,13 +189,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
                 {"error": "OIDC is not configured; use development sign-in"},
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        _prune_pending()
-        pkce = create_pkce_challenge()
-        pending_logins[pkce.state] = (pkce, time.monotonic())
-        return RedirectResponse(
-            url=authorization_url(oidc_config, pkce),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
+        return _start_hosted_login()
 
     @app.get("/auth/callback")
     async def auth_callback(request: Request) -> Response:

@@ -12,8 +12,11 @@ from citius_ui.main import build_app
 
 
 @pytest.fixture
-def client() -> TestClient:
-    config = AppConfig(session_cookie_secure=False)
+def client(tmp_path: Path) -> TestClient:
+    # No OIDC config file: hosted login is unavailable, so "/" and "/dev-login"
+    # deterministically exercise the development sign-in path in these tests,
+    # independent of whether a sibling citius-server checkout happens to exist.
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
     return TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
 
 
@@ -23,9 +26,27 @@ def test_health_and_ready(client: TestClient) -> None:
     assert ready["status"] == "ready"
 
 
-def test_index_shows_login_when_unauthenticated(client: TestClient) -> None:
+def test_index_shows_dev_login_when_oidc_unconfigured(client: TestClient) -> None:
     body = client.get("/").text
     assert "Development sign-in" in body
+
+
+def test_dev_login_page_reachable_via_get(client: TestClient) -> None:
+    assert "Development sign-in" in client.get("/dev-login").text
+
+
+def test_index_redirects_to_hosted_login_when_oidc_configured(tmp_path: Path) -> None:
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=_oidc_config_file(tmp_path))
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+    response = client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("https://issuer.example/oauth/v2/authorize")
+
+
+def test_dev_login_page_still_reachable_when_oidc_configured(tmp_path: Path) -> None:
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=_oidc_config_file(tmp_path))
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+    assert "Development sign-in" in client.get("/dev-login").text
 
 
 def test_dev_login_sets_httponly_session_cookie(client: TestClient) -> None:
@@ -60,8 +81,8 @@ def test_logout_clears_session(client: TestClient) -> None:
     assert client.get("/identity").status_code == 401
 
 
-def test_concurrent_sessions_are_isolated() -> None:
-    config = AppConfig(session_cookie_secure=False)
+def test_concurrent_sessions_are_isolated(tmp_path: Path) -> None:
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
     app = build_app(config, store=SessionStore())
     producer = TestClient(app, follow_redirects=False)
     consumer = TestClient(app, follow_redirects=False)
