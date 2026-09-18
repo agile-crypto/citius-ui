@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 
 import grpc
+import pytest
 from citius_sdk.errors import AuthenticationError, FailedPreconditionError, PermissionDeniedError
 
 from citius_ui.actions.model import Availability, ResultStatus
@@ -55,3 +56,54 @@ def test_error_result_distinguishes_resource_denial() -> None:
 def test_error_result_maps_failed_precondition() -> None:
     result = error_result(FailedPreconditionError(grpc.StatusCode.FAILED_PRECONDITION, "policy"))
     assert result.status is ResultStatus.FAILED_PRECONDITION
+
+
+def test_base64_field_rejects_invalid_input_with_field_name() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _base64_field
+
+    with pytest.raises(RequestError, match="'signature' is not valid base64"):
+        _base64_field({"signature": "not base64!!"}, "signature")
+
+
+def test_base64_field_tolerates_pasted_whitespace() -> None:
+    from citius_ui.workbench.actions import _base64_field
+
+    assert _base64_field({"digest": " c2ln\n "}, "digest") == b"sig"
+
+
+def test_metadata_proto_rejects_invalid_json() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _metadata_proto
+
+    with pytest.raises(RequestError, match="not valid JSON"):
+        _metadata_proto("not json")
+
+
+def test_normalized_maps_missing_field_to_invalid_argument() -> None:
+    import asyncio
+
+    from citius_ui.actions.model import ResultStatus, RpcResult
+    from citius_ui.workbench.actions import _normalized, _require_text
+
+    async def invoke(request: dict[str, object]) -> RpcResult:
+        _require_text(request, "key_name")
+        return RpcResult(status=ResultStatus.OK)
+
+    result = asyncio.run(_normalized(invoke)({}))
+    assert result.status is ResultStatus.INVALID_ARGUMENT
+    assert "'key_name' is required" in result.message
+
+
+def test_normalized_maps_unexpected_error_to_unavailable() -> None:
+    import asyncio
+
+    from citius_ui.actions.model import ResultStatus, RpcResult
+    from citius_ui.workbench.actions import _normalized
+
+    async def invoke(request: dict[str, object]) -> RpcResult:
+        raise RuntimeError("channel closed")
+
+    result = asyncio.run(_normalized(invoke)({}))
+    assert result.status is ResultStatus.UNAVAILABLE
+    assert "channel closed" in result.message

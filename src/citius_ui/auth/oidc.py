@@ -24,6 +24,16 @@ from jwt import PyJWKClient
 
 _DEFAULT_SCOPES = ("openid", "profile", "email", "offline_access")
 
+# Reserved Zitadel scope asking for the caller's project role grants to be
+# embedded as claims, so the UI can display the granted permissions.
+_ZITADEL_ROLES_SCOPE = "urn:zitadel:iam:org:projects:roles"
+
+# Claim keys Zitadel uses for project role grants: the plain form plus the
+# project-scoped form `urn:zitadel:iam:org:project:<id>:roles`.
+_ZITADEL_ROLES_CLAIM = "urn:zitadel:iam:org:project:roles"
+_ZITADEL_ROLES_CLAIM_PREFIX = "urn:zitadel:iam:org:project:"
+_ZITADEL_ROLES_CLAIM_SUFFIX = ":roles"
+
 # Signing algorithms Zitadel advertises for ID tokens. Symmetric algorithms are
 # deliberately excluded so a leaked shared secret can never forge an ID token.
 _ALLOWED_ID_TOKEN_ALGS = (
@@ -135,6 +145,8 @@ def authorization_url(
     effective = scopes
     if not config.enable_refresh_tokens:
         effective = tuple(scope for scope in scopes if scope != "offline_access")
+    if _ZITADEL_ROLES_SCOPE not in effective:
+        effective = (*effective, _ZITADEL_ROLES_SCOPE)
     if config.audience and config.audience not in effective:
         effective = (*effective, config.audience)
     params = {
@@ -164,7 +176,9 @@ class TokenSet:
     expires_in: int | None = None
 
     @classmethod
-    def from_response(cls, payload: dict[str, object]) -> TokenSet:
+    def from_response(cls, payload: object) -> TokenSet:
+        if not isinstance(payload, dict):
+            raise OIDCError("token response is not a JSON object")
         access_token = str(payload.get("access_token", ""))
         if not access_token:
             raise OIDCError("token response did not include an access_token")
@@ -175,6 +189,25 @@ class TokenSet:
             id_token=str(payload.get("id_token", "")),
             expires_in=int(expires) if isinstance(expires, (int, float, str)) and expires != "" else None,
         )
+
+
+def _json_body(response: httpx.Response) -> object:
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise OIDCError("token endpoint returned a non-JSON response") from exc
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """Extract the OAuth error/error_description from an error response body."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    parts = [str(payload[key]) for key in ("error", "error_description") if payload.get(key)]
+    return f" ({': '.join(parts)})" if parts else ""
 
 
 async def exchange_code(
@@ -196,11 +229,11 @@ async def exchange_code(
                 "code_verifier": code_verifier,
             },
         )
-    except httpx.TransportError as exc:
+    except httpx.HTTPError as exc:
         raise OIDCError(f"could not reach the token endpoint: {exc}") from exc
     if response.status_code != httpx.codes.OK:
-        raise OIDCError(f"token exchange failed with status {response.status_code}")
-    return TokenSet.from_response(response.json())
+        raise OIDCError(f"token exchange failed with status {response.status_code}{_error_detail(response)}")
+    return TokenSet.from_response(_json_body(response))
 
 
 async def refresh_tokens(
@@ -219,11 +252,11 @@ async def refresh_tokens(
                 "client_id": config.client_id,
             },
         )
-    except httpx.TransportError as exc:
+    except httpx.HTTPError as exc:
         raise OIDCError(f"could not reach the token endpoint: {exc}") from exc
     if response.status_code != httpx.codes.OK:
-        raise OIDCError(f"token refresh failed with status {response.status_code}")
-    return TokenSet.from_response(response.json())
+        raise OIDCError(f"token refresh failed with status {response.status_code}{_error_detail(response)}")
+    return TokenSet.from_response(_json_body(response))
 
 
 def end_session_url(config: OIDCConfig, *, id_token: str = "") -> str:
@@ -248,7 +281,29 @@ class Identity:
     display_name: str
     username: str = ""
     email: str = ""
+    roles: frozenset[str] = frozenset()
     claims: dict[str, object] = field(default_factory=dict)
+
+
+def extract_roles(claims: dict[str, object]) -> frozenset[str]:
+    """Collect Zitadel project role names from ID-token claims.
+
+    Zitadel embeds granted roles as ``urn:zitadel:iam:org:project:roles`` and/or
+    ``urn:zitadel:iam:org:project:<id>:roles``, each mapping role name to the
+    granting organizations. Only the role names are retained.
+    """
+    roles: set[str] = set()
+    for key, value in claims.items():
+        is_roles_claim = key == _ZITADEL_ROLES_CLAIM or (
+            key.startswith(_ZITADEL_ROLES_CLAIM_PREFIX) and key.endswith(_ZITADEL_ROLES_CLAIM_SUFFIX)
+        )
+        if not is_roles_claim:
+            continue
+        if isinstance(value, dict):
+            roles.update(str(role) for role in value)
+        elif isinstance(value, (list, tuple)):
+            roles.update(str(role) for role in value)
+    return frozenset(roles)
 
 
 class _JWKSCache:
@@ -335,5 +390,6 @@ def validate_id_token(
         display_name=display_name,
         username=username,
         email=str(claims.get("email", "")).strip(),
+        roles=extract_roles(claims),
         claims=claims,
     )

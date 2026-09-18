@@ -100,6 +100,23 @@ def _forms_for(service: str) -> list[RpcFormSpec]:
     return [form for form in FORMS if form.service == service]
 
 
+def _render_response(
+    status: str,
+    message: str = "",
+    *,
+    response: dict[str, Any] | None = None,
+    denial_reason: str | None = None,
+) -> str:
+    """Render the response panel JSON with any server error kept visible."""
+    body: dict[str, Any] = {"status": status}
+    if message:
+        body["message" if status == "OK" else "error"] = message
+    if denial_reason:
+        body["denial_reason"] = denial_reason
+    body["response"] = response or {}
+    return json.dumps(body, indent=2)
+
+
 def _render_input(spec: FormField) -> gr.components.Component:
     label = f"{spec.label} (optional)" if spec.optional else spec.label
     if spec.kind == "area":
@@ -137,9 +154,24 @@ def build_workbench(
         async def _handler(request: gr.Request, *values: object) -> tuple[str, str, Any]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
-                return "UNAUTHENTICATED", "No active session. Sign in again.", gr.update()
-            payload = build_request(spec, list(values))
-            clients = CitiusClients(config, make_provider(session.id))
+                return (
+                    "UNAUTHENTICATED",
+                    _render_response("UNAUTHENTICATED", "No active session. Sign in again."),
+                    gr.update(),
+                )
+            try:
+                payload = build_request(spec, list(values))
+            except ValueError as exc:
+                return "INVALID_ARGUMENT", _render_response("INVALID_ARGUMENT", str(exc)), gr.update()
+
+            try:
+                clients = CitiusClients(config, make_provider(session.id))
+            except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
+                return (
+                    "UNAVAILABLE",
+                    _render_response("UNAVAILABLE", f"could not create a Citius client: {exc}"),
+                    gr.update(),
+                )
             registry = build_registry(clients)
             action = registry.get(spec.service, spec.method)
             executor = ActionExecutor(history)
@@ -152,9 +184,17 @@ def build_workbench(
             try:
                 result, _ = await executor.execute(action, context, payload)
                 status = result.status.value
-                response = json.dumps({"message": result.message, "response": result.response}, indent=2)
+                response = _render_response(
+                    status,
+                    result.message,
+                    response=result.response,
+                    denial_reason=result.denial_reason,
+                )
             finally:
-                await clients.close()
+                try:
+                    await clients.close()
+                except Exception:  # noqa: BLE001 - closing must never mask the result
+                    pass
 
             if spec.produces:
                 return status, response, _producer_rows(session.history_id, spec.method)
@@ -284,19 +324,23 @@ def build_workbench(
                     "**No active session.** Sign in again to execute RPCs.",
                     "Sign in to see effective permissions.",
                 )
-            view = session.public_view()
             banner = (
-                f"**Signed in as {view['display_name']}** (`{view['subject']}`) · "
-                f"endpoint `{view['endpoint']}` · "
-                f"{'authenticated' if view['authenticated'] else 'no token supplied'}"
+                f"**Signed in as {session.display_name}** (`{session.subject}`) · "
+                f"endpoint `{session.endpoint}` · "
+                f"{'authenticated' if session.access_token else 'no token supplied'}"
             )
-            permissions = view["permissions"]
-            key_allow = view["key_allow"]
-            key_deny = view["key_deny"]
-            lines = ["**Method permissions**"]
-            lines += [f"- `{perm}`" for perm in permissions] or ["- (none)"]
+            permissions = sorted(session.permissions)
+            key_allow = session.key_allow
+            key_deny = session.key_deny
+            lines = ["**Method permissions**", ""]
+            if permissions:
+                lines += [f"- `{perm}`" for perm in permissions]
+            else:
+                lines.append("- (none granted to this identity)")
             lines.append("")
-            lines.append(f"**Resource access** · allow {key_allow or ['(none)']} · deny {key_deny or ['(none)']}")
+            allow_text = ", ".join(f"`{pattern}`" for pattern in key_allow) or "(none)"
+            deny_text = ", ".join(f"`{pattern}`" for pattern in key_deny) or "(none)"
+            lines.append(f"**Resource access** · allow: {allow_text} · deny: {deny_text}")
             return banner, "\n".join(lines)
 
         blocks.load(_identity, outputs=[identity_banner, permissions_view])

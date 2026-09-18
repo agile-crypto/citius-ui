@@ -224,3 +224,28 @@ def test_end_session_url_includes_id_token_hint() -> None:
     assert url.startswith(config.end_session_endpoint)
     assert query["id_token_hint"] == ["it-789"]
     assert query["post_logout_redirect_uri"] == [config.post_logout_redirect_uri]
+
+
+def test_authorization_url_requests_zitadel_roles_scope() -> None:
+    config = load_oidc_config_dict()
+    query = parse_qs(urlparse(authorization_url(config, create_pkce_challenge())).query)
+    assert "urn:zitadel:iam:org:projects:roles" in query["scope"][0].split(" ")
+
+
+def test_extract_roles_reads_plain_and_project_scoped_claims() -> None:
+    from citius_ui.auth.oidc import extract_roles
+
+    claims: dict[str, object] = {
+        "sub": "1",
+        "urn:zitadel:iam:org:project:roles": {"citius:crypto:sign": {"1": "org"}},
+        "urn:zitadel:iam:org:project:12345:roles": {"citius:keys:read": {"1": "org"}},
+        "unrelated": {"nope": True},
+    }
+    assert extract_roles(claims) == frozenset({"citius:crypto:sign", "citius:keys:read"})
+
+
+def test_extract_roles_handles_list_claims_and_absence() -> None:
+    from citius_ui.auth.oidc import extract_roles
+
+    assert extract_roles({"urn:zitadel:iam:org:project:roles": ["a", "b"]}) == frozenset({"a", "b"})
+    assert extract_roles({"sub": "1"}) == frozenset()

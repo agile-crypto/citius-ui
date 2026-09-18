@@ -251,18 +251,22 @@ def _execute_workbench(service: str, method: str, request_text: str, state: dict
         result = {"status": "INVALID_JSON", "error": {"message": str(exc)}, "mock": True}
         return state, result, _metadata(service, method, result), history_rows(state), producer_response_rows(state)
 
-    with _SHARED_BACKEND_LOCK:
-        for field in _SHARED_BACKEND:
-            state[field] = copy.deepcopy(_SHARED_BACKEND[field])
-        state, result = execute(state, persona, service, method, request)
-        for field in _SHARED_BACKEND:
-            _SHARED_BACKEND[field] = copy.deepcopy(state[field])
+    try:
+        with _SHARED_BACKEND_LOCK:
+            for field in _SHARED_BACKEND:
+                state[field] = copy.deepcopy(_SHARED_BACKEND[field])
+            state, result = execute(state, persona, service, method, request)
+            for field in _SHARED_BACKEND:
+                _SHARED_BACKEND[field] = copy.deepcopy(state[field])
+    except Exception as exc:  # noqa: BLE001 - a mock failure must render, not crash the UI
+        result = {"status": "ERROR", "error": {"message": str(exc) or type(exc).__name__}, "mock": True}
 
     return state, result, _metadata(service, method, result), history_rows(state), producer_response_rows(state)
 
 
 def _metadata(service: str, method: str, result: dict[str, Any]) -> str:
-    return f"### {result['status']}\n\n`caas.crypto.v1.{service}/{method}` · mock response · simulated 15 ms"
+    status = result.get("status", "ERROR")
+    return f"### {status}\n\n`caas.crypto.v1.{service}/{method}` · mock response · simulated 15 ms"
 
 
 def _clear_history(state: dict[str, Any]):

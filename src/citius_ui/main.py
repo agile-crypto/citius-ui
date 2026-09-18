@@ -8,6 +8,7 @@ session store and are never written to the browser or logs.
 
 from __future__ import annotations
 
+import html
 import logging
 import time
 from typing import Annotated
@@ -137,16 +138,22 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
         persona: Annotated[str, Form()],
         access_token: Annotated[str, Form()] = "",
     ) -> Response:
-        definition = get_persona(persona)
+        definition = get_persona(persona.strip())
         if definition is None:
             return JSONResponse(
-                {"error": f"unknown persona {persona!r}"},
+                {"error": f"unknown persona {persona[:64]!r}"},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        access_token = access_token.strip()
+        if len(access_token) > 16384:
+            return JSONResponse(
+                {"error": "access token is too long"},
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         session = sessions.create(
             subject=definition.username,
             display_name=definition.display_name,
-            access_token=access_token.strip(),
+            access_token=access_token,
             endpoint=config.citius_endpoint,
             permissions=definition.permissions,
             key_allow=definition.key_allow,
@@ -191,7 +198,10 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
                 tokens = await exchange_code(client, oidc_config, code=code, code_verifier=pkce.verifier)
         except OIDCError as exc:
             _log.warning("OIDC token exchange failed: %s", exc)
-            return JSONResponse({"error": "token exchange failed"}, status_code=status.HTTP_401_UNAUTHORIZED)
+            return JSONResponse(
+                {"error": "token exchange failed", "detail": str(exc)},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
         try:
             identity = validate_id_token(
                 tokens.id_token,
@@ -203,7 +213,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             # Signature, issuer, audience, nonce, or expiry validation failed.
             _log.warning("OIDC ID-token validation failed: %s", exc)
             return JSONResponse(
-                {"error": "id token validation failed"},
+                {"error": "id token validation failed", "detail": str(exc)},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
         session = sessions.create(
@@ -214,6 +224,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             id_token=tokens.id_token,
             ttl_seconds=tokens.expires_in,
             endpoint=config.citius_endpoint,
+            permissions=identity.roles,
         )
         response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
         _set_session_cookie(response, config, session.id)
@@ -289,7 +300,8 @@ _PAGE_STYLE = """
 
 def _login_page() -> str:
     options = "".join(
-        f'<option value="{key}">{persona.display_name}</option>' for key, persona in DEMO_PERSONAS.items()
+        f'<option value="{html.escape(key, quote=True)}">{html.escape(persona.display_name)}</option>'
+        for key, persona in DEMO_PERSONAS.items()
     )
     return f"""<!doctype html><html><head><title>Citius Console</title>{_PAGE_STYLE}</head>
 <body>
@@ -312,12 +324,18 @@ def _login_page() -> str:
 
 def _identity_page(session: Session) -> str:
     view = session.public_view()
-    permissions = "".join(f"<li>{perm}</li>" for perm in view["permissions"])
+    # Identity fields originate from external ID-token claims; escape them all.
+    permissions = "".join(f"<li>{html.escape(str(perm))}</li>" for perm in view["permissions"])
+    if not permissions:
+        permissions = '<li class="muted">None granted to this identity.</li>'
+    display_name = html.escape(str(view["display_name"]))
+    subject = html.escape(str(view["subject"]))
+    endpoint = html.escape(str(view["endpoint"] or ""))
     return f"""<!doctype html><html><head><title>Citius Console</title>{_PAGE_STYLE}</head>
 <body>
 <div class="card">
-  <div class="banner"><h1>Signed in as {view["display_name"]}</h1>
-    <p>{view["subject"]} · endpoint {view["endpoint"]}</p></div>
+  <div class="banner"><h1>Signed in as {display_name}</h1>
+    <p>{subject} · endpoint {endpoint}</p></div>
   <div class="body">
     <p><strong>Granted permissions</strong></p>
     <ul>{permissions}</ul>

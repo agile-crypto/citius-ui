@@ -19,6 +19,11 @@ from citius_sdk.errors import (
 
 from citius_ui.actions.model import ResultStatus, RpcResult
 
+
+class RequestError(ValueError):
+    """Raised when a request payload is malformed before it reaches the wire."""
+
+
 _ERROR_STATUS: dict[type[CitiusError], ResultStatus] = {
     AuthenticationError: ResultStatus.UNAUTHENTICATED,
     PermissionDeniedError: ResultStatus.PERMISSION_DENIED,
@@ -53,6 +58,12 @@ def error_result(error: CitiusError) -> RpcResult:
     return RpcResult(status=status, message=error.message, denial_reason=denial_reason)
 
 
+def invalid_result(error: Exception) -> RpcResult:
+    """Map a malformed request to a normalized INVALID_ARGUMENT RpcResult."""
+    return RpcResult(status=ResultStatus.INVALID_ARGUMENT, message=str(error) or type(error).__name__)
+
+
 def unexpected_result(error: grpc.RpcError | Exception) -> RpcResult:
     """Wrap an unexpected transport failure as a normalized RpcResult."""
-    return RpcResult(status=ResultStatus.UNAVAILABLE, message=str(error))
+    message = str(error).strip() or type(error).__name__
+    return RpcResult(status=ResultStatus.UNAVAILABLE, message=message)

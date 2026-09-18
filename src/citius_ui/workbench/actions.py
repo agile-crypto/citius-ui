@@ -8,6 +8,10 @@ registered as visibly unavailable rather than hidden or emulated.
 from __future__ import annotations
 
 import base64
+import binascii
+import functools
+import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from citius_api.messages.metadata_pb2 import OperationMetadata as OperationMetadataProto
@@ -15,13 +19,19 @@ from citius_sdk.errors import CitiusError
 from citius_sdk.services import crypto as sdk_crypto
 from citius_sdk.services import crypto_policy as sdk_policy
 from citius_sdk.services import key_management as sdk_keys
-from google.protobuf.json_format import ParseDict
+from google.protobuf.json_format import ParseDict, ParseError
 
 from citius_ui.actions.artifacts import Artifact, ArtifactKind
 from citius_ui.actions.model import Availability, ResultStatus, RpcAction, RpcResult
 from citius_ui.actions.registry import ActionRegistry
 from citius_ui.grpc_client.client import CitiusClients
-from citius_ui.grpc_client.serialization import encode_bytes, error_result
+from citius_ui.grpc_client.serialization import (
+    RequestError,
+    encode_bytes,
+    error_result,
+    invalid_result,
+    unexpected_result,
+)
 
 CONTRACT_ONLY: dict[str, list[str]] = {
     "KeyManagementService": [
@@ -119,11 +129,71 @@ def _as_bytes(value: Any) -> bytes:
     return str(value).encode("utf-8")
 
 
+def _require(request: dict[str, Any], key: str) -> Any:
+    """Return a required request field, or raise a displayable RequestError."""
+    value = request.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise RequestError(f"'{key}' is required")
+    return value
+
+
+def _require_text(request: dict[str, Any], key: str) -> str:
+    return str(_require(request, key)).strip()
+
+
+def _base64_field(request: dict[str, Any], key: str) -> bytes:
+    """Decode a required base64 field, tolerating pasted whitespace."""
+    raw = "".join(_require_text(request, key).split())
+    try:
+        return base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RequestError(f"'{key}' is not valid base64: {exc}") from exc
+
+
 def _metadata_proto(value: Any) -> OperationMetadataProto:
-    if isinstance(value, dict):
+    """Build operation metadata, rejecting malformed input instead of dropping it."""
+    if value is None or value == "":
+        return OperationMetadataProto()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise RequestError(f"'metadata' is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RequestError("'metadata' must be a JSON object")
+    try:
         parsed: OperationMetadataProto = ParseDict(value, OperationMetadataProto(), ignore_unknown_fields=True)
-        return parsed
-    return OperationMetadataProto()
+    except ParseError as exc:
+        raise RequestError(f"'metadata' is not valid operation metadata: {exc}") from exc
+    return parsed
+
+
+def _normalized(
+    invoke: Callable[[dict[str, Any]], Awaitable[RpcResult]],
+) -> Callable[[dict[str, Any]], Awaitable[RpcResult]]:
+    """Turn every failure of an action into a normalized RpcResult.
+
+    SDK errors map to their gRPC status, malformed requests to INVALID_ARGUMENT,
+    and anything unexpected (transport teardown, protobuf edge cases) to
+    UNAVAILABLE — so an error is always rendered in the response panel instead
+    of crashing the UI callback.
+    """
+
+    @functools.wraps(invoke)
+    async def run(request: dict[str, Any]) -> RpcResult:
+        if not isinstance(request, dict):
+            return invalid_result(RequestError("request must be a JSON object"))
+        try:
+            return await invoke(request)
+        except CitiusError as error:
+            return error_result(error)
+        except (RequestError, KeyError, TypeError) as error:
+            message = str(error) if isinstance(error, RequestError) else f"invalid request: {error}"
+            return invalid_result(RequestError(message))
+        except Exception as error:  # noqa: BLE001 - last-resort UI stability net
+            return unexpected_result(error)
+
+    return run
 
 
 def build_registry(clients: CitiusClients) -> ActionRegistry:
@@ -139,7 +209,9 @@ def build_registry(clients: CitiusClients) -> ActionRegistry:
 def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def encrypt(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_crypto.encrypt_request(request["key_name"], _as_bytes(request["plaintext"]))
+            built = sdk_crypto.encrypt_request(
+                _require_text(request, "key_name"), _as_bytes(_require(request, "plaintext"))
+            )
             result = await clients.crypto.encrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -164,7 +236,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def sign(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_crypto.sign_request(request["key_name"], _as_bytes(request["message"]))
+            built = sdk_crypto.sign_request(_require_text(request, "key_name"), _as_bytes(_require(request, "message")))
             result = await clients.crypto.sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -191,8 +263,8 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def decrypt(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.decrypt_request(
-                request["key_name"],
-                base64.b64decode(str(request["ciphertext"])),
+                _require_text(request, "key_name"),
+                _base64_field(request, "ciphertext"),
                 _metadata_proto(request.get("metadata")),
             )
             result = await clients.crypto.decrypt(built)
@@ -206,9 +278,9 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def verify(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.verify_request(
-                request["key_name"],
-                _as_bytes(request["message"]),
-                base64.b64decode(str(request["signature"])),
+                _require_text(request, "key_name"),
+                _as_bytes(_require(request, "message")),
+                _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
             )
             result = await clients.crypto.verify(built)
@@ -218,7 +290,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def digest_sign(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_crypto.digest_sign_request(request["key_name"], base64.b64decode(str(request["digest"])))
+            built = sdk_crypto.digest_sign_request(_require_text(request, "key_name"), _base64_field(request, "digest"))
             result = await clients.crypto.digest_sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -231,9 +303,9 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def digest_verify(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.digest_verify_request(
-                request["key_name"],
-                base64.b64decode(str(request["digest"])),
-                base64.b64decode(str(request["signature"])),
+                _require_text(request, "key_name"),
+                _base64_field(request, "digest"),
+                _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
             )
             result = await clients.crypto.digest_verify(built)
@@ -247,7 +319,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="Encrypt",
             permission=PERMISSION_BY_METHOD["Encrypt"],
             availability=Availability.AVAILABLE,
-            invoke=encrypt,
+            invoke=_normalized(encrypt),
             extract_artifacts=encrypt_artifacts,
         )
     )
@@ -257,7 +329,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="Sign",
             permission=PERMISSION_BY_METHOD["Sign"],
             availability=Availability.AVAILABLE,
-            invoke=sign,
+            invoke=_normalized(sign),
             extract_artifacts=sign_artifacts,
         )
     )
@@ -267,7 +339,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="Decrypt",
             permission=PERMISSION_BY_METHOD["Decrypt"],
             availability=Availability.AVAILABLE,
-            invoke=decrypt,
+            invoke=_normalized(decrypt),
         )
     )
     registry.register(
@@ -276,7 +348,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="Verify",
             permission=PERMISSION_BY_METHOD["Verify"],
             availability=Availability.AVAILABLE,
-            invoke=verify,
+            invoke=_normalized(verify),
         )
     )
     registry.register(
@@ -285,7 +357,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="DigestSign",
             permission=PERMISSION_BY_METHOD["DigestSign"],
             availability=Availability.AVAILABLE,
-            invoke=digest_sign,
+            invoke=_normalized(digest_sign),
             extract_artifacts=sign_artifacts,
         )
     )
@@ -295,7 +367,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="DigestVerify",
             permission=PERMISSION_BY_METHOD["DigestVerify"],
             availability=Availability.AVAILABLE,
-            invoke=digest_verify,
+            invoke=_normalized(digest_verify),
         )
     )
 
@@ -304,7 +376,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def create_key(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_keys.create_key_request(
-                request["name"],
+                _require_text(request, "name"),
                 policy=request.get("policy", ""),
                 template_id=request.get("template_id", ""),
                 provider_id=request.get("provider_id", ""),
@@ -317,7 +389,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def read_key(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_keys.read_key_request(request["name"])
+            built = sdk_keys.read_key_request(_require_text(request, "name"))
             result = await clients.key_management.read_key(built)
         except CitiusError as error:
             return error_result(error)
@@ -328,7 +400,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def transform_key(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_keys.transform_key_request(
-                request["name"],
+                _require_text(request, "name"),
                 retain_key_bytes=bool(request.get("retain_key_bytes", False)),
                 template_id=request.get("template_id", ""),
             )
@@ -348,7 +420,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="CreateKey",
             permission=PERMISSION_BY_METHOD["CreateKey"],
             availability=Availability.AVAILABLE,
-            invoke=create_key,
+            invoke=_normalized(create_key),
         )
     )
     registry.register(
@@ -357,7 +429,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="ReadKey",
             permission=PERMISSION_BY_METHOD["ReadKey"],
             availability=Availability.AVAILABLE,
-            invoke=read_key,
+            invoke=_normalized(read_key),
         )
     )
     registry.register(
@@ -366,7 +438,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="TransformKey",
             permission=PERMISSION_BY_METHOD["TransformKey"],
             availability=Availability.AVAILABLE,
-            invoke=transform_key,
+            invoke=_normalized(transform_key),
         )
     )
 
@@ -375,9 +447,9 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def create_policy(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_policy.create_policy_request(
-                request["name"],
-                str(request["policy_document"]),
-                request.get("format", "yaml"),
+                _require_text(request, "name"),
+                str(_require(request, "policy_document")),
+                request.get("format") or "yaml",
             )
             result = await clients.crypto_policy.create_policy(built)
         except CitiusError as error:
@@ -391,7 +463,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def read_policy(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_policy.read_policy_request(request["name"])
+            built = sdk_policy.read_policy_request(_require_text(request, "name"))
             result = await clients.crypto_policy.read_policy(built)
         except CitiusError as error:
             return error_result(error)
@@ -408,9 +480,9 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def update_policy(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_policy.update_policy_request(
-                request["name"],
-                str(request["policy_document"]),
-                request.get("format", "yaml"),
+                _require_text(request, "name"),
+                str(_require(request, "policy_document")),
+                request.get("format") or "yaml",
                 expected_version=request.get("expected_version"),
             )
             result = await clients.crypto_policy.update_policy(built)
@@ -429,7 +501,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="CreateCryptoPolicy",
             permission=PERMISSION_BY_METHOD["CreateCryptoPolicy"],
             availability=Availability.AVAILABLE,
-            invoke=create_policy,
+            invoke=_normalized(create_policy),
         )
     )
     registry.register(
@@ -438,7 +510,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="ReadCryptoPolicy",
             permission=PERMISSION_BY_METHOD["ReadCryptoPolicy"],
             availability=Availability.AVAILABLE,
-            invoke=read_policy,
+            invoke=_normalized(read_policy),
         )
     )
     registry.register(
@@ -447,7 +519,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
             method="UpdateCryptoPolicy",
             permission=PERMISSION_BY_METHOD["UpdateCryptoPolicy"],
             availability=Availability.AVAILABLE,
-            invoke=update_policy,
+            invoke=_normalized(update_policy),
         )
     )
 

@@ -53,10 +53,21 @@ class ActionExecutor:
         if action.invoke is None:
             raise ValueError(f"action {action.qualified_name} has no invoke binding")
 
-        built = action.build_request(request) if action.build_request else request
         correlation_id = uuid.uuid4().hex
         started = time.perf_counter()
-        result = await action.invoke(built)
+        try:
+            built = action.build_request(request) if action.build_request else request
+        except Exception as exc:  # noqa: BLE001 - malformed input must render, not crash
+            built = request
+            result = RpcResult(status=ResultStatus.INVALID_ARGUMENT, message=str(exc) or type(exc).__name__)
+        else:
+            try:
+                result = await action.invoke(built)
+            except Exception as exc:  # noqa: BLE001 - last-resort net; actions normalize their own errors
+                result = RpcResult(
+                    status=ResultStatus.ERROR,
+                    message=f"unexpected error in {action.qualified_name}: {exc}",
+                )
         duration_ms = (time.perf_counter() - started) * 1000
 
         artifacts: tuple[Artifact, ...] = ()

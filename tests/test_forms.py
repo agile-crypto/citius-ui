@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from citius_ui.workbench.forms import FORMS_BY_METHOD, build_request
+import pytest
+
+from citius_ui.workbench.forms import FORMS_BY_METHOD, FormValidationError, build_request
 
 
 def test_build_request_drops_empty_and_none() -> None:
@@ -16,10 +18,28 @@ def test_build_request_parses_metadata_json() -> None:
     assert request["signature"] == "c2ln"
 
 
-def test_build_request_keeps_metadata_text_when_invalid_json() -> None:
+def test_build_request_rejects_invalid_metadata_json() -> None:
     spec = FORMS_BY_METHOD[("CryptoService", "Decrypt")]
-    request = build_request(spec, ["demo-key", "ct", "not json"])
-    assert request["metadata"] == "not json"
+    with pytest.raises(FormValidationError, match="must be valid JSON"):
+        build_request(spec, ["demo-key", "ct", "not json"])
+
+
+def test_build_request_rejects_non_object_metadata() -> None:
+    spec = FORMS_BY_METHOD[("CryptoService", "Decrypt")]
+    with pytest.raises(FormValidationError, match="JSON object"):
+        build_request(spec, ["demo-key", "ct", "[1, 2]"])
+
+
+def test_build_request_strips_surrounding_whitespace() -> None:
+    spec = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
+    request = build_request(spec, ["  demo-key  ", "demo-policy", "  ", None])
+    assert request == {"name": "demo-key", "policy": "demo-policy"}
+
+
+def test_build_request_rejects_non_numeric_number_field() -> None:
+    spec = FORMS_BY_METHOD[("CryptoPolicyService", "UpdateCryptoPolicy")]
+    with pytest.raises(FormValidationError, match="must be a number"):
+        build_request(spec, ["demo-policy", "doc", "yaml", "two"])
 
 
 def test_build_request_coerces_number_fields() -> None:

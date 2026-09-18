@@ -184,25 +184,39 @@ FORMS: tuple[RpcFormSpec, ...] = (
 FORMS_BY_METHOD: dict[tuple[str, str], RpcFormSpec] = {(f.service, f.method): f for f in FORMS}
 
 
+class FormValidationError(ValueError):
+    """Raised when a form value cannot be turned into a request field."""
+
+
 def build_request(spec: RpcFormSpec, values: list[object]) -> dict[str, object]:
     """Assemble a request dict from ordered field values, dropping empties.
 
-    Metadata fields provided as JSON text are parsed to a dict so the action can
-    rebuild the operation metadata for Verify/Decrypt replays.
+    Text values are stripped of surrounding whitespace. Metadata fields provided
+    as JSON text are parsed to a dict so the action can rebuild the operation
+    metadata for Verify/Decrypt replays; invalid JSON or non-numeric input for a
+    number field raises FormValidationError so the UI can report it instead of
+    sending a silently mangled request.
     """
     request: dict[str, object] = {}
     for spec_field, value in zip(spec.fields, values, strict=True):
+        if isinstance(value, str):
+            value = value.strip()
         if value is None or value == "":
             continue
         if spec_field.key == "metadata" and isinstance(value, str):
             try:
-                request[spec_field.key] = json.loads(value)
-            except json.JSONDecodeError:
-                request[spec_field.key] = value
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise FormValidationError(f"{spec_field.label} must be valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise FormValidationError(f"{spec_field.label} must be a JSON object")
+            request[spec_field.key] = parsed
             continue
         if spec_field.kind == "number":
-            if isinstance(value, (int, float, str)):
-                request[spec_field.key] = int(value)
+            try:
+                request[spec_field.key] = int(float(value))  # type: ignore[arg-type]
+            except (TypeError, ValueError) as exc:
+                raise FormValidationError(f"{spec_field.label} must be a number") from exc
             continue
         request[spec_field.key] = value
     return request
