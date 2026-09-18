@@ -40,3 +40,18 @@ class MemoryHistoryStore:
 
     def clear(self, session_id: str) -> None:
         self._records.pop(session_id, None)
+
+    def remove_method(self, session_id: str, method: str) -> None:
+        """Drop this session's records for one RPC method, keeping the rest.
+
+        Used by the Workbench's per-RPC "Clear history" control so clearing a
+        producer response table (e.g. Sign) doesn't discard unrelated history.
+        """
+        records = self._records.get(session_id)
+        if not records:
+            return
+        remaining = [record for record in records if record.method != method]
+        if remaining:
+            self._records[session_id] = remaining
+        else:
+            self._records.pop(session_id, None)

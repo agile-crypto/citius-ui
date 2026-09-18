@@ -3,7 +3,12 @@ from __future__ import annotations
 import grpc
 import pytest
 import pytest_asyncio
-from citius_api.messages.signing_pb2 import SignResponse, VerifyResponse
+from citius_api.messages.signing_pb2 import (
+    DigestSignResponse,
+    DigestVerifyResponse,
+    SignResponse,
+    VerifyResponse,
+)
 from citius_api.services.crypto_service_pb2_grpc import (
     CryptoServiceServicer,
     add_CryptoServiceServicer_to_server,
@@ -29,6 +34,15 @@ class FakeCrypto(CryptoServiceServicer):
     async def Verify(self, request, context):  # noqa: N802
         valid = request.signature == b"sig:" + request.input and request.metadata.key_version == 5
         return VerifyResponse(valid=valid)
+
+    async def DigestSign(self, request, context):  # noqa: N802
+        response = DigestSignResponse(signature=b"digestsig:" + request.digest)
+        response.metadata.key_version = 5
+        return response
+
+    async def DigestVerify(self, request, context):  # noqa: N802
+        valid = request.signature == b"digestsig:" + request.digest and request.metadata.key_version == 5
+        return DigestVerifyResponse(valid=valid)
 
 
 @pytest_asyncio.fixture
@@ -85,6 +99,56 @@ async def test_sign_then_verify_through_full_stack(crypto_endpoint) -> None:
     assert verify_result.response["valid"] is True
 
     assert len(history.list("hist-1")) == 2
+    await clients.close()
+
+
+@pytest.mark.asyncio
+async def test_digest_sign_bundle_carries_the_digest_for_digest_verify(crypto_endpoint) -> None:
+    # Regression test: DigestSign's artifact used to reuse Sign's context
+    # builder, which reads request["message"] -- a key DigestSign requests
+    # never have -- so the copyable bundle silently carried an empty
+    # "message" instead of the digest, and pasting it into DigestVerify left
+    # the digest field empty.
+    config = AppConfig(
+        citius_endpoint=crypto_endpoint,
+        citius_tls_enabled=False,
+        session_cookie_secure=False,
+    )
+
+    async def token() -> str:
+        return "demo-token"
+
+    clients = CitiusClients(config, token)
+    registry = build_registry(clients)
+    history = MemoryHistoryStore()
+    executor = ActionExecutor(history)
+    context = ExecutionContext(session_id="hist-2", subject="citius-producer")
+
+    digest = "8f434346"
+    sign_result, sign_record = await executor.execute(
+        registry.get("CryptoService", "DigestSign"),
+        context,
+        {"key_name": "demo-signing-key", "digest": digest},
+    )
+    assert sign_result.status is ResultStatus.OK
+    bundle = sign_record.artifacts[0].bundle()
+    assert bundle["digest"] == digest
+    assert "message" not in bundle
+
+    # The bundle is exactly what the Workbench's "Paste bundle" -> "Fill
+    # fields from bundle" flow would hand to DigestVerify.
+    verify_result, _ = await executor.execute(
+        registry.get("CryptoService", "DigestVerify"),
+        context,
+        {
+            "key_name": bundle["key_name"],
+            "digest": bundle["digest"],
+            "signature": bundle["signature"],
+            "metadata": bundle["metadata"],
+        },
+    )
+    assert verify_result.status is ResultStatus.OK
+    assert verify_result.response["valid"] is True
     await clients.close()
 
 

@@ -414,6 +414,20 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             )
         ]
 
+    def digest_sign_artifacts(request: dict[str, Any], result: RpcResult) -> list[Artifact]:
+        response = result.response
+        return [
+            Artifact(
+                id="",
+                kind=ArtifactKind.SIGNATURE,
+                key_name=str(request["key_name"]),
+                key_version=response["metadata"].get("key_version"),
+                value=response["signature"]["base64"],
+                metadata=response["metadata"],
+                context={"digest": request.get("digest", "")},
+            )
+        ]
+
     async def decrypt(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.decrypt_request(
@@ -516,7 +530,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             permission=PERMISSION_BY_METHOD["DigestSign"],
             availability=Availability.AVAILABLE,
             invoke=_normalized(digest_sign),
-            extract_artifacts=sign_artifacts,
+            extract_artifacts=digest_sign_artifacts,
         )
     )
     registry.register(

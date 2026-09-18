@@ -35,6 +35,7 @@ class RpcFormSpec:
     fields: tuple[FormField, ...]
     examples: tuple[tuple[object, ...], ...] = ()
     produces: str = ""  # "" | Signature | Ciphertext
+    consumes: str = ""  # "" | Signature | Ciphertext: accepts a pasted producer bundle
     advanced_hint: str = ""
 
 
@@ -228,6 +229,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', ""),),
+        consumes="Signature",
     ),
     RpcFormSpec(
         "CryptoService",
@@ -264,6 +266,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', ""),),
+        consumes="Ciphertext",
     ),
     RpcFormSpec(
         "CryptoService",
@@ -301,6 +304,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', ""),),
+        consumes="Signature",
     ),
 )
 

@@ -3,9 +3,12 @@
 Services are light parent accordions; each implemented RPC is a nested child
 accordion with per-field forms aligned to api/proto, clickable examples, an
 inline output panel, and, for producer RPCs, an inline history table with a
-per-RPC clear. Every execution funnels through the shared ActionExecutor so
-results are redacted and recorded in the session's history. Contract-only RPCs
-are listed honestly as unavailable.
+real per-RPC "Clear history" (removes those records from the session's
+history store, not just the display) and a copyable JSON bundle of the latest
+response. Consumer RPCs (Verify, Decrypt, DigestVerify) accept that bundle
+pasted back in and fill their fields from it. Every execution funnels through
+the shared ActionExecutor so results are redacted and recorded in the
+session's history. Contract-only RPCs are listed honestly as unavailable.
 """
 
 from __future__ import annotations
@@ -32,6 +35,16 @@ _AVAILABILITY_BADGE = {
     Availability.UNAVAILABLE: "Unavailable (missing dependency)",
     Availability.FORBIDDEN: "Forbidden for this identity",
     Availability.UNKNOWN: "Unknown until probed",
+}
+
+# Producer method -> the consumer RPC its "Latest response bundle" pastes
+# into. Sign and DigestSign both produce a Signature artifact but populate
+# different bundle fields (message vs. digest), so this is keyed by method
+# rather than by the coarser artifact kind.
+_CONSUMER_HINT = {
+    "Sign": "Verify",
+    "DigestSign": "DigestVerify",
+    "Encrypt": "Decrypt",
 }
 
 CSS = """
@@ -151,18 +164,24 @@ def build_workbench(
     def _run_form(
         spec: RpcFormSpec,
     ) -> Any:
-        async def _handler(request: gr.Request, *values: object) -> tuple[str, str, Any]:
+        async def _handler(request: gr.Request, *values: object) -> tuple[str, str, Any, Any]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
                 return (
                     "UNAUTHENTICATED",
                     _render_response("UNAUTHENTICATED", "No active session. Sign in again."),
                     gr.update(),
+                    gr.update(),
                 )
             try:
                 payload = build_request(spec, list(values))
             except ValueError as exc:
-                return "INVALID_ARGUMENT", _render_response("INVALID_ARGUMENT", str(exc)), gr.update()
+                return (
+                    "INVALID_ARGUMENT",
+                    _render_response("INVALID_ARGUMENT", str(exc)),
+                    gr.update(),
+                    gr.update(),
+                )
 
             try:
                 clients = CitiusClients(config, make_provider(session.id))
@@ -170,6 +189,7 @@ def build_workbench(
                 return (
                     "UNAVAILABLE",
                     _render_response("UNAVAILABLE", f"could not create a Citius client: {exc}"),
+                    gr.update(),
                     gr.update(),
                 )
             registry = build_registry(clients)
@@ -197,8 +217,58 @@ def build_workbench(
                     pass
 
             if spec.produces:
-                return status, response, _producer_rows(session.history_id, spec.method)
-            return status, response, gr.update()
+                rows = _producer_rows(session.history_id, spec.method)
+                # rows are newest-first (see MemoryHistoryStore.list), so the
+                # first row is this response's bundle when the call succeeded.
+                latest_bundle = rows[0][3] if rows else ""
+                return status, response, rows, latest_bundle
+            return status, response, gr.update(), gr.update()
+
+        return _handler
+
+    def _clear_producer_history(method: str) -> Callable[[gr.Request], Awaitable[tuple[list[list[str]], str]]]:
+        async def _handler(request: gr.Request) -> tuple[list[list[str]], str]:
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is not None:
+                history.remove_method(session.history_id, method)
+            return [], ""
+
+        return _handler
+
+    def _fill_from_bundle(spec: RpcFormSpec) -> Callable[[str], tuple[Any, ...]]:
+        """Parse a pasted producer bundle and fill the matching request fields.
+
+        Fields whose key isn't present in the bundle are left untouched
+        (gr.update() is a no-op), so pasting a bundle from an incompatible
+        producer still fills whatever fields do match instead of failing
+        outright or blanking unrelated fields (e.g. scope_params).
+        """
+
+        def _handler(bundle_text: str) -> tuple[Any, ...]:
+            no_op = tuple(gr.update() for _ in spec.fields)
+            text = (bundle_text or "").strip()
+            if not text:
+                return (*no_op, "Paste a bundle JSON first.")
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                return (*no_op, f"Not valid JSON: {exc}")
+            if not isinstance(parsed, dict):
+                return (*no_op, "Bundle must be a JSON object.")
+
+            values: list[Any] = []
+            filled = 0
+            for field in spec.fields:
+                if field.key not in parsed:
+                    values.append(gr.update())
+                    continue
+                raw = parsed[field.key]
+                if field.key == "metadata" and not isinstance(raw, str):
+                    raw = json.dumps(raw)
+                values.append(raw)
+                filled += 1
+            note = f"Filled {filled} field(s) from the bundle." if filled else "Bundle had no fields matching this RPC."
+            return (*values, note)
 
         return _handler
 
@@ -221,6 +291,25 @@ def build_workbench(
     def _render_rpc(spec: RpcFormSpec) -> None:
         with gr.Accordion(spec.method, open=False, elem_classes=["rpc-accordion"]) as accordion:
             inputs = [_render_input(field) for field in spec.fields]
+
+            if spec.consumes:
+                with gr.Accordion(f"Paste a {spec.consumes} bundle", open=False, elem_classes=["rpc-accordion"]):
+                    gr.Markdown(
+                        f"Copy a {spec.consumes} bundle from the **Latest response bundle** box of the "
+                        "producing RPC — typically in another browser signed in as a different identity, "
+                        "as in the multi-browser demo runbooks. Only the bundle crosses browsers, never a "
+                        "token. Paste it here, then fill the fields above."
+                    )
+                    paste_box = gr.Textbox(
+                        label=f"{spec.consumes} bundle (JSON)",
+                        lines=3,
+                        max_lines=10,
+                        placeholder='{"key_name": "...", ...}',
+                    )
+                    fill_button = gr.Button("Fill fields from bundle", variant="secondary")
+                    fill_note = gr.Markdown()
+                fill_button.click(_fill_from_bundle(spec), inputs=[paste_box], outputs=[*inputs, fill_note])
+
             with gr.Row():
                 run = gr.Button(spec.action_label, variant="primary")
                 clear = gr.Button("Clear", variant="secondary")
@@ -228,7 +317,18 @@ def build_workbench(
                 status_box = gr.Textbox(label="Status", interactive=False)
                 response_box = gr.Code(language="json", label="Response", interactive=False)
                 history_table = None
+                latest_bundle = None
                 if spec.produces:
+                    latest_bundle = gr.Textbox(
+                        label=(
+                            f"Latest response bundle — copy into {_CONSUMER_HINT.get(spec.method, 'a compatible RPC')} "
+                            "(often in another browser)"
+                        ),
+                        interactive=False,
+                        show_copy_button=True,
+                        lines=3,
+                        max_lines=10,
+                    )
                     history_table = gr.Dataframe(
                         headers=["Time", "Key name", "Key version", "Bundle"],
                         col_count=(4, "fixed"),
@@ -236,18 +336,28 @@ def build_workbench(
                         interactive=False,
                         wrap=True,
                     )
+                    clear_history = gr.Button("Clear history", variant="secondary", size="sm")
             if spec.examples:
                 with gr.Accordion("Examples", open=True):
                     gr.Examples(examples=[list(example) for example in spec.examples], inputs=inputs)
 
-            outputs = [status_box, response_box, history_table if history_table is not None else status_box]
+            outputs = [
+                status_box,
+                response_box,
+                history_table if history_table is not None else status_box,
+                latest_bundle if latest_bundle is not None else status_box,
+            ]
             run.click(lambda: gr.update(visible=True), outputs=output_row)
             run.click(_run_form(spec), inputs=[*inputs], outputs=outputs)
 
             clear_targets = [*inputs, status_box, response_box]
             clear.click(lambda targets=clear_targets: [None for _ in targets], outputs=clear_targets)
-            if history_table is not None:
-                clear.click(lambda: [], outputs=history_table)
+
+            if history_table is not None and latest_bundle is not None:
+                clear_history.click(
+                    _clear_producer_history(spec.method),
+                    outputs=[history_table, latest_bundle],
+                )
 
             def _mark_open() -> dict[str, object]:
                 return gr.update(elem_classes=["rpc-accordion", "rpc-open"])
