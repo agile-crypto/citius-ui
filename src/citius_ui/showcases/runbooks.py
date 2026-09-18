@@ -20,7 +20,7 @@ POLICY_ENFORCEMENT = Runbook(
             service="CryptoPolicyService",
             method="CreateCryptoPolicy",
             expected=ExpectedOutcome.SUCCESS,
-            explanation="Define demo-signing-policy permitting only SIGN and VERIFY.",
+            explanation="Define demo-signing-policy permitting key lifecycle plus signing operations only.",
         ),
         RunbookStep(
             persona="Producer",

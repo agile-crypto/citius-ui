@@ -187,8 +187,18 @@ def test_auth_callback_validates_id_token_and_sets_identity(tmp_path: Path, monk
         captured_nonce["nonce"] = nonce
         return Identity(subject="user-1", display_name="Citius Producer", username="citius-producer")
 
+    async def fake_userinfo(_client: object, _config: object, *, access_token: str) -> dict[str, object]:
+        assert access_token == "ACCESS-SECRET-XYZ"
+        return {
+            "sub": "user-1",
+            "urn:citius:permissions": ["citius:crypto:sign", "citius:keys:read"],
+            "urn:citius:allowed_key_patterns": ["demo-*"],
+            "urn:citius:deny_key_patterns": ["demo-restricted-*"],
+        }
+
     monkeypatch.setattr(main_module, "exchange_code", fake_exchange)
     monkeypatch.setattr(main_module, "validate_id_token", fake_validate)
+    monkeypatch.setattr(main_module, "fetch_userinfo", fake_userinfo)
 
     config = AppConfig(session_cookie_secure=False, oidc_config_path=_oidc_config_file(tmp_path))
     store = SessionStore()
@@ -204,8 +214,41 @@ def test_auth_callback_validates_id_token_and_sets_identity(tmp_path: Path, monk
     body = identity.json()
     assert body["subject"] == "user-1"
     assert body["display_name"] == "Citius Producer"
+    # Granted permissions and key-access patterns come from the userinfo claims.
+    assert body["permissions"] == ["citius:crypto:sign", "citius:keys:read"]
+    assert body["key_allow"] == ["demo-*"]
+    assert body["key_deny"] == ["demo-restricted-*"]
     # The raw tokens are never exposed to the browser.
     assert "SECRET" not in identity.text
+
+
+def test_auth_callback_grants_from_id_token_when_userinfo_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import citius_ui.main as main_module
+    from citius_ui.auth.oidc import Identity, OIDCError, TokenSet
+
+    async def fake_exchange(_client: object, _config: object, **_kwargs: object) -> TokenSet:
+        return TokenSet(access_token="at", refresh_token="rt", id_token="idt", expires_in=3600)
+
+    def fake_validate(_id_token: str, _config: object, **_kwargs: object) -> Identity:
+        claims: dict[str, object] = {"urn:citius:permissions": ["citius:crypto:verify"]}
+        return Identity(subject="user-2", display_name="Citius Consumer", claims=claims)
+
+    async def failing_userinfo(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise OIDCError("userinfo request failed with status 500")
+
+    monkeypatch.setattr(main_module, "exchange_code", fake_exchange)
+    monkeypatch.setattr(main_module, "validate_id_token", fake_validate)
+    monkeypatch.setattr(main_module, "fetch_userinfo", failing_userinfo)
+
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=_oidc_config_file(tmp_path))
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+
+    state = _state_from_login(client)
+    assert client.get(f"/auth/callback?code=auth-code&state={state}").status_code == 303
+    body = client.get("/identity").json()
+    assert body["permissions"] == ["citius:crypto:verify"]
 
 
 def test_auth_callback_rejects_invalid_id_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

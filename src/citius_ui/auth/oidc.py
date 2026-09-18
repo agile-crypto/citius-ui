@@ -34,6 +34,15 @@ _ZITADEL_ROLES_CLAIM = "urn:zitadel:iam:org:project:roles"
 _ZITADEL_ROLES_CLAIM_PREFIX = "urn:zitadel:iam:org:project:"
 _ZITADEL_ROLES_CLAIM_SUFFIX = ":roles"
 
+# Custom claims injected by the Citius Zitadel token action (see
+# citius-server/bootstrap/zitadel: the action maps project-role grants and
+# key-access metadata into the urn:citius namespace). The action runs on the
+# pre-userinfo trigger, so these claims are guaranteed on the userinfo
+# endpoint and appear in the ID token only when the app asserts userinfo.
+_CITIUS_PERMISSIONS_CLAIM = "urn:citius:permissions"
+_CITIUS_KEY_ALLOW_CLAIM = "urn:citius:allowed_key_patterns"
+_CITIUS_KEY_DENY_CLAIM = "urn:citius:deny_key_patterns"
+
 # Signing algorithms Zitadel advertises for ID tokens. Symmetric algorithms are
 # deliberately excluded so a leaked shared secret can never forge an ID token.
 _ALLOWED_ID_TOKEN_ALGS = (
@@ -73,6 +82,10 @@ class OIDCConfig:
     @property
     def jwks_uri(self) -> str:
         return f"{self.issuer.rstrip('/')}/oauth/v2/keys"
+
+    @property
+    def userinfo_endpoint(self) -> str:
+        return f"{self.issuer.rstrip('/')}/oidc/v1/userinfo"
 
 
 def load_oidc_config(path: Path | str) -> OIDCConfig:
@@ -283,6 +296,69 @@ class Identity:
     email: str = ""
     roles: frozenset[str] = frozenset()
     claims: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AccessGrants:
+    """Displayable permission and key-access grants from token claims."""
+
+    permissions: frozenset[str] = frozenset()
+    key_allow: tuple[str, ...] = ()
+    key_deny: tuple[str, ...] = ()
+
+
+def _string_items(value: object) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
+def extract_grants(claims: dict[str, object]) -> AccessGrants:
+    """Read the Citius permission and key-access claims from token claims.
+
+    The Citius token action projects project-role grants into
+    ``urn:citius:permissions`` and key-access metadata into the allow/deny
+    pattern claims. When the custom permissions claim is absent (action not
+    wired, or claims from a bare ID token), the standard Zitadel project-role
+    claims are used as a fallback so the UI still shows granted roles.
+    """
+    permissions = frozenset(_string_items(claims.get(_CITIUS_PERMISSIONS_CLAIM)))
+    if not permissions:
+        permissions = extract_roles(claims)
+    return AccessGrants(
+        permissions=permissions,
+        key_allow=_string_items(claims.get(_CITIUS_KEY_ALLOW_CLAIM)),
+        key_deny=_string_items(claims.get(_CITIUS_KEY_DENY_CLAIM)),
+    )
+
+
+async def fetch_userinfo(
+    client: httpx.AsyncClient,
+    config: OIDCConfig,
+    *,
+    access_token: str,
+) -> dict[str, object]:
+    """Fetch userinfo claims for the access token from the issuer.
+
+    The Citius token action runs on Zitadel's pre-userinfo trigger, so this is
+    the authoritative source of the ``urn:citius:*`` claims for a hosted login.
+    """
+    try:
+        response = await client.get(
+            config.userinfo_endpoint,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    except httpx.HTTPError as exc:
+        raise OIDCError(f"could not reach the userinfo endpoint: {exc}") from exc
+    if response.status_code != httpx.codes.OK:
+        raise OIDCError(f"userinfo request failed with status {response.status_code}{_error_detail(response)}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise OIDCError("userinfo endpoint returned a non-JSON response") from exc
+    if not isinstance(payload, dict):
+        raise OIDCError("userinfo response is not a JSON object")
+    return payload
 
 
 def extract_roles(claims: dict[str, object]) -> frozenset[str]:

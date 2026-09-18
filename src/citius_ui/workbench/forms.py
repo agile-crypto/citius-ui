@@ -39,7 +39,49 @@ class RpcFormSpec:
 
 
 _POLICY_FORMATS = ("json", "rego", "cedar", "yaml")
-_SAMPLE_POLICY = "version: v1\nallowed_operations: [SIGN, VERIFY]\nallowed_templates: [ecdsa-p256-sha256]"
+_KEY_SCOPES = ("signature", "signature_prehashed", "aead")
+
+# Policy documents must match the server's rules_json schema exactly: JSON with
+# version "1", allowed_operations.key_operations using lowercase operation
+# names, and allowed_templates using catalog template IDs. The evaluator is
+# deny-by-default, so create_key/read_key must be granted explicitly for the
+# key-management examples to work against the same policy.
+_SAMPLE_SIGNING_POLICY = json.dumps(
+    {
+        "version": "1",
+        "allowed_operations": {
+            "key_operations": ["create_key", "read_key", "rotate_key", "sign", "verify", "digest_sign", "digest_verify"]
+        },
+        "allowed_templates": ["ecdsa-p256-sha256-der", "ml-dsa-65"],
+    },
+    indent=2,
+)
+_SAMPLE_ENCRYPTION_POLICY = json.dumps(
+    {
+        "version": "1",
+        "allowed_operations": {"key_operations": ["create_key", "read_key", "encrypt", "decrypt"]},
+        "allowed_templates": ["aes-256-gcm-128-96"],
+    },
+    indent=2,
+)
+_SAMPLE_RESTRICTED_POLICY = json.dumps(
+    {
+        "version": "1",
+        "allowed_operations": {"key_operations": ["read_key", "verify"]},
+        "allowed_templates": ["ecdsa-p256-sha256-der"],
+    },
+    indent=2,
+)
+_SAMPLE_SIGNING_POLICY_V2 = json.dumps(
+    {
+        "version": "1",
+        "allowed_operations": {
+            "key_operations": ["create_key", "read_key", "rotate_key", "sign", "verify", "digest_sign", "digest_verify"]
+        },
+        "allowed_templates": ["ecdsa-p256-sha256-der", "ecdsa-p384-sha384-der", "ml-dsa-65"],
+    },
+    indent=2,
+)
 
 FORMS: tuple[RpcFormSpec, ...] = (
     RpcFormSpec(
@@ -48,12 +90,18 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Create",
         (
             FormField("name", "Policy name", placeholder="demo-signing-policy"),
-            FormField("policy_document", "Policy document", kind="area", placeholder="version: v1 …"),
+            FormField(
+                "policy_document",
+                "Policy document",
+                kind="area",
+                placeholder='{"version": "1", "allowed_operations": {"key_operations": ["sign"]}, …}',
+            ),
             FormField("format", "Format", kind="dropdown", choices=_POLICY_FORMATS, optional=True),
         ),
         examples=(
-            ("demo-signing-policy", _SAMPLE_POLICY, "yaml"),
-            ("demo-restricted-policy", "version: v1\nallowed_operations: [VERIFY]", "yaml"),
+            ("demo-signing-policy", _SAMPLE_SIGNING_POLICY, "json"),
+            ("demo-encryption-policy", _SAMPLE_ENCRYPTION_POLICY, "json"),
+            ("demo-restricted-policy", _SAMPLE_RESTRICTED_POLICY, "json"),
         ),
     ),
     RpcFormSpec(
@@ -69,11 +117,16 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Update",
         (
             FormField("name", "Policy name", placeholder="demo-signing-policy"),
-            FormField("policy_document", "Policy document", kind="area", placeholder="version: v2 …"),
+            FormField(
+                "policy_document",
+                "Policy document",
+                kind="area",
+                placeholder='{"version": "1", "allowed_operations": {"key_operations": ["sign"]}, …}',
+            ),
             FormField("format", "Format", kind="dropdown", choices=_POLICY_FORMATS, optional=True),
             FormField("expected_version", "Expected version", kind="number", optional=True),
         ),
-        examples=(("demo-signing-policy", _SAMPLE_POLICY + "\nmax_key_age_days: 90", "yaml", 1),),
+        examples=(("demo-signing-policy", _SAMPLE_SIGNING_POLICY_V2, "json", 1),),
     ),
     RpcFormSpec(
         "KeyManagementService",
@@ -82,12 +135,19 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("name", "Key name", placeholder="demo-signing-key"),
             FormField("policy", "Policy", placeholder="demo-signing-policy"),
-            FormField("template_id", "Template ID", placeholder="ecdsa-p256-sha256", optional=True),
+            FormField("template_id", "Template ID", placeholder="ecdsa-p256-sha256-der", optional=True),
             FormField("provider_id", "Provider ID", placeholder="software", optional=True),
+            FormField(
+                "scope",
+                "Scope (inferred from template when blank)",
+                kind="dropdown",
+                choices=_KEY_SCOPES,
+                optional=True,
+            ),
         ),
         examples=(
-            ("demo-signing-key", "demo-signing-policy", "ecdsa-p256-sha256", "software"),
-            ("demo-encryption-key", "demo-signing-policy", "aes-256-gcm", "software"),
+            ("demo-signing-key", "demo-signing-policy", "ecdsa-p256-sha256-der", "software", "signature"),
+            ("demo-encryption-key", "demo-encryption-policy", "aes-256-gcm-128-96", "software", "aead"),
         ),
     ),
     RpcFormSpec(
@@ -108,8 +168,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("name", "Key name", placeholder="demo-signing-key"),
             FormField("template_id", "Template ID", placeholder="ml-dsa-65", optional=True),
             FormField("retain_key_bytes", "Retain key bytes", kind="bool"),
+            FormField(
+                "scope",
+                "Scope (inferred from template when blank)",
+                kind="dropdown",
+                choices=_KEY_SCOPES,
+                optional=True,
+            ),
         ),
-        examples=(("demo-signing-key", "ml-dsa-65", False),),
+        examples=(("demo-signing-key", "ml-dsa-65", False, "signature"),),
     ),
     RpcFormSpec(
         "CryptoService",

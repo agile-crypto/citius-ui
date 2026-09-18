@@ -249,3 +249,72 @@ def test_extract_roles_handles_list_claims_and_absence() -> None:
 
     assert extract_roles({"urn:zitadel:iam:org:project:roles": ["a", "b"]}) == frozenset({"a", "b"})
     assert extract_roles({"sub": "1"}) == frozenset()
+
+
+def test_extract_grants_prefers_citius_permissions_claim() -> None:
+    from citius_ui.auth.oidc import extract_grants
+
+    claims: dict[str, object] = {
+        "urn:citius:permissions": ["citius:crypto:sign", "citius:keys:read", " "],
+        "urn:citius:allowed_key_patterns": ["demo-*"],
+        "urn:citius:deny_key_patterns": ["demo-restricted-*"],
+        "urn:zitadel:iam:org:project:roles": {"ignored-role": {"1": "org"}},
+    }
+    grants = extract_grants(claims)
+    assert grants.permissions == frozenset({"citius:crypto:sign", "citius:keys:read"})
+    assert grants.key_allow == ("demo-*",)
+    assert grants.key_deny == ("demo-restricted-*",)
+
+
+def test_extract_grants_falls_back_to_zitadel_roles() -> None:
+    from citius_ui.auth.oidc import extract_grants
+
+    claims: dict[str, object] = {"urn:zitadel:iam:org:project:roles": {"citius:crypto:sign": {"1": "org"}}}
+    grants = extract_grants(claims)
+    assert grants.permissions == frozenset({"citius:crypto:sign"})
+    assert grants.key_allow == ()
+    assert grants.key_deny == ()
+
+
+@pytest.mark.asyncio
+async def test_fetch_userinfo_returns_claims() -> None:
+    from citius_ui.auth.oidc import fetch_userinfo
+
+    config = load_oidc_config_dict()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL(config.userinfo_endpoint)
+        assert request.headers["authorization"] == "Bearer at-1"
+        return httpx.Response(200, json={"sub": "1", "urn:citius:permissions": ["citius:keys:read"]})
+
+    async with _mock_client(handler) as client:
+        claims = await fetch_userinfo(client, config, access_token="at-1")
+    assert claims["urn:citius:permissions"] == ["citius:keys:read"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_userinfo_raises_with_error_detail() -> None:
+    from citius_ui.auth.oidc import OIDCError, fetch_userinfo
+
+    config = load_oidc_config_dict()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "invalid_token", "error_description": "expired"})
+
+    async with _mock_client(handler) as client:
+        with pytest.raises(OIDCError, match="invalid_token: expired"):
+            await fetch_userinfo(client, config, access_token="at-1")
+
+
+@pytest.mark.asyncio
+async def test_fetch_userinfo_rejects_non_json_response() -> None:
+    from citius_ui.auth.oidc import OIDCError, fetch_userinfo
+
+    config = load_oidc_config_dict()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>not json</html>")
+
+    async with _mock_client(handler) as client:
+        with pytest.raises(OIDCError, match="non-JSON"):
+            await fetch_userinfo(client, config, access_token="at-1")

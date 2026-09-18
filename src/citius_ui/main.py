@@ -27,6 +27,8 @@ from citius_ui.auth.oidc import (
     create_pkce_challenge,
     end_session_url,
     exchange_code,
+    extract_grants,
+    fetch_userinfo,
     load_oidc_config,
     refresh_tokens,
     validate_id_token,
@@ -216,6 +218,23 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
                 {"error": "id token validation failed", "detail": str(exc)},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        # The Citius token action attaches permissions and key-access patterns
+        # on the pre-userinfo trigger, so userinfo is the authoritative claim
+        # source; ID-token claims are the fallback when the fetch fails.
+        claims: dict[str, object] = dict(identity.claims)
+        try:
+            async with _oidc_http_client() as client:
+                claims.update(await fetch_userinfo(client, oidc_config, access_token=tokens.access_token))
+        except OIDCError as exc:
+            _log.warning("OIDC userinfo fetch failed; deriving grants from ID-token claims only: %s", exc)
+        grants = extract_grants(claims)
+        if not grants.permissions:
+            _log.warning(
+                "No Citius permissions found in userinfo or ID-token claims for subject %s; "
+                "the workbench will show no granted permissions. Check that the Zitadel "
+                "token action is wired to the pre-userinfo trigger and the user has role grants.",
+                identity.subject,
+            )
         session = sessions.create(
             subject=identity.subject,
             display_name=identity.display_name,
@@ -224,7 +243,9 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             id_token=tokens.id_token,
             ttl_seconds=tokens.expires_in,
             endpoint=config.citius_endpoint,
-            permissions=identity.roles,
+            permissions=grants.permissions,
+            key_allow=grants.key_allow,
+            key_deny=grants.key_deny,
         )
         response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
         _set_session_cookie(response, config, session.id)

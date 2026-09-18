@@ -107,3 +107,87 @@ def test_normalized_maps_unexpected_error_to_unavailable() -> None:
     result = asyncio.run(_normalized(invoke)({}))
     assert result.status is ResultStatus.UNAVAILABLE
     assert "channel closed" in result.message
+
+
+def test_policy_document_rejects_non_json_with_schema_hint() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _policy_document
+
+    request = {"policy_document": "version: v1\nallowed_operations: [SIGN]", "format": "json"}
+    with pytest.raises(RequestError, match="not valid JSON.*allowed_operations"):
+        _policy_document(request)
+
+
+def test_policy_document_defaults_to_json_validation() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _policy_document
+
+    with pytest.raises(RequestError, match="not valid JSON"):
+        _policy_document({"policy_document": "not json"})
+
+
+def test_policy_document_passes_other_formats_through() -> None:
+    from citius_ui.workbench.actions import _policy_document
+
+    document = "package citius\nallow = true"
+    assert _policy_document({"policy_document": document, "format": "rego"}) == document
+
+
+def test_policy_form_examples_are_valid_server_rules_json() -> None:
+    import json as jsonlib
+
+    from citius_ui.workbench.forms import FORMS_BY_METHOD
+
+    known_operations = {
+        "create_key",
+        "read_key",
+        "delete_key",
+        "sign",
+        "verify",
+        "digest_sign",
+        "digest_verify",
+        "encrypt",
+        "decrypt",
+        "wrap",
+        "unwrap",
+        "derive_key",
+        "rotate_key",
+    }
+    for method in ("CreateCryptoPolicy", "UpdateCryptoPolicy"):
+        spec = FORMS_BY_METHOD[("CryptoPolicyService", method)]
+        for example in spec.examples:
+            document = jsonlib.loads(str(example[1]))
+            # Matches the server's rules_json schema and validation rules.
+            assert document["version"] == "1"
+            operations = document["allowed_operations"]["key_operations"]
+            assert operations and set(operations) <= known_operations
+            assert document["allowed_templates"]
+
+
+def test_key_scope_spec_infers_from_template() -> None:
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    assert _key_scope_spec({"template_id": "ecdsa-p256-sha256-der"}).WhichOneof("scope_spec") == "signature"
+    assert _key_scope_spec({"template_id": "aes-256-gcm-128-96"}).WhichOneof("scope_spec") == "aead"
+    assert _key_scope_spec({"template_id": "chacha20-poly1305"}).WhichOneof("scope_spec") == "aead"
+    prehashed = _key_scope_spec({"template_id": "ecdsa-p256-prehashed-der"})
+    assert prehashed.signature.scope == 3  # SIGNATURE_SCOPE_PREHASHED
+
+
+def test_key_scope_spec_explicit_scope_wins() -> None:
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    spec = _key_scope_spec({"template_id": "aes-256-gcm-128-96", "scope": "signature"})
+    assert spec.WhichOneof("scope_spec") == "signature"
+
+
+def test_key_scope_spec_requires_scope_when_uninferable() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    with pytest.raises(RequestError, match="'scope' is required"):
+        _key_scope_spec({})
+    with pytest.raises(RequestError, match="cannot infer"):
+        _key_scope_spec({"template_id": "hkdf-sha256"})
+    with pytest.raises(RequestError, match="unsupported scope"):
+        _key_scope_spec({"scope": "teleport"})

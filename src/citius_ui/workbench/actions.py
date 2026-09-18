@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from citius_api.messages.metadata_pb2 import OperationMetadata as OperationMetadataProto
+from citius_api.types import common_pb2 as common_types
 from citius_sdk.errors import CitiusError
 from citius_sdk.services import crypto as sdk_crypto
 from citius_sdk.services import crypto_policy as sdk_policy
@@ -168,6 +169,82 @@ def _metadata_proto(value: Any) -> OperationMetadataProto:
     return parsed
 
 
+KEY_SCOPES = ("signature", "signature_prehashed", "aead")
+
+_SIGNATURE_TEMPLATE_PREFIXES = (
+    "ecdsa-",
+    "ed25519",
+    "ed448",
+    "ml-dsa-",
+    "slh-dsa-",
+    "hash-ml-dsa-",
+    "hash-slh-dsa-",
+    "rsa-",
+)
+_AEAD_TEMPLATE_MARKERS = ("gcm", "chacha20-poly1305")
+
+
+def _scope_spec(scope: str) -> common_types.ScopeSpecification:
+    normalized = scope.strip().lower()
+    if normalized == "signature":
+        return common_types.ScopeSpecification(
+            signature=common_types.SignatureScopeSpec(scope=common_types.SIGNATURE_SCOPE_STANDARD)
+        )
+    if normalized == "signature_prehashed":
+        return common_types.ScopeSpecification(
+            signature=common_types.SignatureScopeSpec(scope=common_types.SIGNATURE_SCOPE_PREHASHED)
+        )
+    if normalized == "aead":
+        return common_types.ScopeSpecification(aead=common_types.AeadScopeSpec(scope=common_types.AEAD_SCOPE_STANDARD))
+    raise RequestError(f"unsupported scope {scope!r} (supported: {', '.join(KEY_SCOPES)})")
+
+
+def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
+    """Resolve the key scope the server requires on Create/TransformKey.
+
+    The server rejects key creation without a scope specification even when a
+    template is given, and the template must match the scope. An explicit
+    'scope' request field wins; otherwise the scope is inferred from the
+    template id.
+    """
+    scope = str(request.get("scope") or "").strip()
+    if scope:
+        return _scope_spec(scope)
+    template_id = str(request.get("template_id") or "").strip().lower()
+    if not template_id:
+        raise RequestError(f"'scope' is required when no template_id is given (supported: {', '.join(KEY_SCOPES)})")
+    if "prehashed" in template_id:
+        return _scope_spec("signature_prehashed")
+    if template_id.startswith(_SIGNATURE_TEMPLATE_PREFIXES):
+        return _scope_spec("signature")
+    if any(marker in template_id for marker in _AEAD_TEMPLATE_MARKERS):
+        return _scope_spec("aead")
+    raise RequestError(
+        f"cannot infer a key scope from template {template_id!r}; "
+        f"set 'scope' explicitly (supported: {', '.join(KEY_SCOPES)})"
+    )
+
+
+def _policy_document(request: dict[str, Any]) -> str:
+    """Return the policy document, pre-validating JSON-format documents.
+
+    The server parses every policy document as rules JSON, so catching invalid
+    JSON here turns a cryptic server-side parse failure into an immediate,
+    actionable INVALID_ARGUMENT.
+    """
+    document = str(_require(request, "policy_document"))
+    if str(request.get("format") or "json").lower() == "json":
+        try:
+            json.loads(document)
+        except json.JSONDecodeError as exc:
+            raise RequestError(
+                f"'policy_document' is not valid JSON: {exc}. The server stores policy rules as JSON, "
+                'e.g. {"version": "1", "allowed_operations": {"key_operations": ["sign", "verify"]}, '
+                '"allowed_templates": ["ecdsa-p256-sha256-der"]}'
+            ) from exc
+    return document
+
+
 def _normalized(
     invoke: Callable[[dict[str, Any]], Awaitable[RpcResult]],
 ) -> Callable[[dict[str, Any]], Awaitable[RpcResult]]:
@@ -212,6 +289,9 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             built = sdk_crypto.encrypt_request(
                 _require_text(request, "key_name"), _as_bytes(_require(request, "plaintext"))
             )
+            # The server requires the scope_params oneof; default to standard
+            # AEAD parameters, matching the aead key scope the Workbench creates.
+            built.aead_params.SetInParent()
             result = await clients.crypto.encrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -237,6 +317,9 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def sign(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.sign_request(_require_text(request, "key_name"), _as_bytes(_require(request, "message")))
+            # The server requires the scope_params oneof; no_context selects
+            # the standard signature scope the Workbench creates keys with.
+            built.no_context.SetInParent()
             result = await clients.crypto.sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -267,6 +350,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "ciphertext"),
                 _metadata_proto(request.get("metadata")),
             )
+            built.aead_params.SetInParent()
             result = await clients.crypto.decrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -283,6 +367,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
             )
+            built.no_context.SetInParent()
             result = await clients.crypto.verify(built)
         except CitiusError as error:
             return error_result(error)
@@ -291,6 +376,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def digest_sign(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.digest_sign_request(_require_text(request, "key_name"), _base64_field(request, "digest"))
+            built.no_context.SetInParent()
             result = await clients.crypto.digest_sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -308,6 +394,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
             )
+            built.no_context.SetInParent()
             result = await clients.crypto.digest_verify(built)
         except CitiusError as error:
             return error_result(error)
@@ -381,6 +468,9 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
                 template_id=request.get("template_id", ""),
                 provider_id=request.get("provider_id", ""),
             )
+            # The SDK builder does not cover scope_spec yet, but the server
+            # requires a scope even when a template is given.
+            built.scope_spec.CopyFrom(_key_scope_spec(request))
             result = await clients.key_management.create_key(built)
         except CitiusError as error:
             return error_result(error)
@@ -404,6 +494,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
                 retain_key_bytes=bool(request.get("retain_key_bytes", False)),
                 template_id=request.get("template_id", ""),
             )
+            built.scope_spec.CopyFrom(_key_scope_spec(request))
             result = await clients.key_management.transform_key(built)
         except CitiusError as error:
             return error_result(error)
@@ -448,8 +539,8 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
         try:
             built = sdk_policy.create_policy_request(
                 _require_text(request, "name"),
-                str(_require(request, "policy_document")),
-                request.get("format") or "yaml",
+                _policy_document(request),
+                request.get("format") or "json",
             )
             result = await clients.crypto_policy.create_policy(built)
         except CitiusError as error:
@@ -481,8 +572,8 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
         try:
             built = sdk_policy.update_policy_request(
                 _require_text(request, "name"),
-                str(_require(request, "policy_document")),
-                request.get("format") or "yaml",
+                _policy_document(request),
+                request.get("format") or "json",
                 expected_version=request.get("expected_version"),
             )
             result = await clients.crypto_policy.update_policy(built)

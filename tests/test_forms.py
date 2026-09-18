@@ -7,7 +7,7 @@ from citius_ui.workbench.forms import FORMS_BY_METHOD, FormValidationError, buil
 
 def test_build_request_drops_empty_and_none() -> None:
     spec = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
-    request = build_request(spec, ["demo-key", "demo-policy", "", None])
+    request = build_request(spec, ["demo-key", "demo-policy", "", None, None])
     assert request == {"name": "demo-key", "policy": "demo-policy"}
 
 
@@ -32,7 +32,7 @@ def test_build_request_rejects_non_object_metadata() -> None:
 
 def test_build_request_strips_surrounding_whitespace() -> None:
     spec = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
-    request = build_request(spec, ["  demo-key  ", "demo-policy", "  ", None])
+    request = build_request(spec, ["  demo-key  ", "demo-policy", "  ", None, None])
     assert request == {"name": "demo-key", "policy": "demo-policy"}
 
 
@@ -54,7 +54,7 @@ def test_forms_field_keys_align_with_action_request_keys() -> None:
     expected = {
         ("CryptoService", "Sign"): {"key_name", "message"},
         ("CryptoService", "Encrypt"): {"key_name", "plaintext"},
-        ("KeyManagementService", "CreateKey"): {"name", "policy", "template_id", "provider_id"},
+        ("KeyManagementService", "CreateKey"): {"name", "policy", "template_id", "provider_id", "scope"},
         ("CryptoPolicyService", "CreateCryptoPolicy"): {"name", "policy_document", "format"},
     }
     for key, keys in expected.items():
