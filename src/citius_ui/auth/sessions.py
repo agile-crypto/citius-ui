@@ -8,11 +8,21 @@ tokens, or history.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshedTokens:
+    """Result of a refresh-token exchange used to update a session in place."""
+
+    access_token: str
+    refresh_token: str = ""
+    expires_in: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +48,13 @@ class Session:
         moment = now or datetime.now(timezone.utc)
         return moment >= self.expires_at
 
+    def seconds_until_expiry(self, *, now: datetime | None = None) -> float | None:
+        """Seconds until the access token expires, or None when unknown."""
+        if self.expires_at is None:
+            return None
+        moment = now or datetime.now(timezone.utc)
+        return (self.expires_at - moment).total_seconds()
+
     def public_view(self) -> dict[str, object]:
         """Return identity metadata safe to display, never the raw tokens."""
         return {
@@ -57,6 +74,7 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+        self._refresh_locks: dict[str, asyncio.Lock] = {}
 
     def create(
         self,
@@ -136,6 +154,15 @@ class SessionStore:
             return
         with self._lock:
             self._sessions.pop(session_id, None)
+            self._refresh_locks.pop(session_id, None)
+
+    def _refresh_lock(self, session_id: str) -> asyncio.Lock:
+        with self._lock:
+            lock = self._refresh_locks.get(session_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._refresh_locks[session_id] = lock
+            return lock
 
     def token_provider(self, session_id: str) -> Callable[[], Awaitable[str]]:
         """Return an async callable that yields the session's current token.
@@ -150,5 +177,58 @@ class SessionStore:
         async def provider() -> str:
             session = store.get(session_id)
             return session.access_token if session else ""
+
+        return provider
+
+    def refreshing_token_provider(
+        self,
+        session_id: str,
+        *,
+        refresher: Callable[[str], Awaitable[RefreshedTokens]],
+        skew_seconds: float = 60.0,
+    ) -> Callable[[], Awaitable[str]]:
+        """Return a provider that proactively refreshes a near-expiry token.
+
+        Before returning the token, the provider refreshes it when the access
+        token expires within ``skew_seconds`` and a refresh token is present.
+        Refreshes are serialized per session so concurrent RPCs never trigger
+        overlapping refreshes; the second caller observes the token minted by
+        the first. Any refresh failure falls back to the current token so a
+        transient issuer error does not immediately break an active session.
+        """
+
+        store = self
+
+        async def provider() -> str:
+            session = store.get(session_id)
+            if session is None:
+                return ""
+            remaining = session.seconds_until_expiry()
+            if not session.refresh_token or remaining is None or remaining > skew_seconds:
+                return session.access_token
+
+            lock = store._refresh_lock(session_id)
+            async with lock:
+                # Re-read after acquiring the lock: a concurrent caller may have
+                # already refreshed while we waited.
+                session = store.get(session_id)
+                if session is None:
+                    return ""
+                remaining = session.seconds_until_expiry()
+                if remaining is not None and remaining > skew_seconds:
+                    return session.access_token
+                try:
+                    refreshed = await refresher(session.refresh_token)
+                except Exception:
+                    # Keep the current token; the SDK surfaces UNAUTHENTICATED
+                    # if the server ultimately rejects it.
+                    return session.access_token
+                updated = store.replace_tokens(
+                    session_id,
+                    access_token=refreshed.access_token,
+                    refresh_token=refreshed.refresh_token,
+                    ttl_seconds=refreshed.expires_in,
+                )
+                return updated.access_token if updated else session.access_token
 
         return provider

@@ -8,6 +8,7 @@ session store and are never written to the browser or logs.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Annotated
 
@@ -26,13 +27,16 @@ from citius_ui.auth.oidc import (
     end_session_url,
     exchange_code,
     load_oidc_config,
+    refresh_tokens,
+    validate_id_token,
 )
-from citius_ui.auth.sessions import Session, SessionStore
+from citius_ui.auth.sessions import RefreshedTokens, Session, SessionStore
 from citius_ui.config import AppConfig
 from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.workbench.app import build_workbench
 
 _PENDING_LOGIN_TTL_SECONDS = 600.0
+_log = logging.getLogger("citius_ui.auth")
 
 
 def _set_session_cookie(response: Response, config: AppConfig, session_id: str) -> None:
@@ -62,9 +66,44 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
     oidc_config: OIDCConfig | None = None
     try:
         oidc_config = load_oidc_config(config.oidc_config_path)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
         oidc_config = None
+        _log.warning(
+            "Hosted OIDC login disabled: could not load %s (%s). "
+            "/login will return 503; only development sign-in is available.",
+            config.oidc_config_path,
+            exc,
+        )
+    if oidc_config is not None:
+        ca = config.effective_oidc_ca
+        if ca is None:
+            _log.warning(
+                "OIDC configured for issuer %s but no CA is set "
+                "(CITIUS_OIDC_CA_CERT / CITIUS_TLS_CA). If the issuer uses a "
+                "local mkcert certificate, the token exchange and JWKS fetch "
+                "will fail TLS verification and /auth/callback will return 401.",
+                oidc_config.issuer,
+            )
+        else:
+            _log.info(
+                "Hosted OIDC login enabled: issuer=%s redirect_uri=%s ca=%s",
+                oidc_config.issuer,
+                oidc_config.redirect_uri,
+                ca,
+            )
     pending_logins: dict[str, tuple[PkceChallenge, float]] = {}
+
+    def _oidc_http_client() -> httpx.AsyncClient:
+        """HTTP client for OIDC token/refresh calls, trusting the issuer CA.
+
+        The token and refresh endpoints are served by Zitadel over TLS. In local
+        development that certificate is signed by the mkcert root, which is not
+        in the system trust store, so the configured OIDC CA is used to verify
+        it. When no CA is configured, httpx falls back to the system trust store.
+        """
+        ca = config.effective_oidc_ca
+        verify: str | bool = str(ca) if ca else True
+        return httpx.AsyncClient(timeout=10.0, verify=verify)
 
     def _prune_pending() -> None:
         cutoff = time.monotonic() - _PENDING_LOGIN_TTL_SECONDS
@@ -148,13 +187,28 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             return JSONResponse({"error": "invalid or expired state"}, status_code=status.HTTP_400_BAD_REQUEST)
         pkce, _ = entry
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with _oidc_http_client() as client:
                 tokens = await exchange_code(client, oidc_config, code=code, code_verifier=pkce.verifier)
-        except OIDCError:
+        except OIDCError as exc:
+            _log.warning("OIDC token exchange failed: %s", exc)
             return JSONResponse({"error": "token exchange failed"}, status_code=status.HTTP_401_UNAUTHORIZED)
+        try:
+            identity = validate_id_token(
+                tokens.id_token,
+                oidc_config,
+                nonce=pkce.nonce,
+                ca_cert=str(config.effective_oidc_ca) if config.effective_oidc_ca else None,
+            )
+        except OIDCError as exc:
+            # Signature, issuer, audience, nonce, or expiry validation failed.
+            _log.warning("OIDC ID-token validation failed: %s", exc)
+            return JSONResponse(
+                {"error": "id token validation failed"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
         session = sessions.create(
-            subject="",
-            display_name="",
+            subject=identity.subject,
+            display_name=identity.display_name,
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
             id_token=tokens.id_token,
@@ -189,7 +243,22 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
         session = sessions.get(cookie)
         return session.subject if session else None
 
-    workbench = build_workbench(config, sessions, history)
+    token_provider_factory = sessions.token_provider
+    if oidc_config is not None and oidc_config.enable_refresh_tokens:
+
+        async def _refresher(refresh_token: str) -> RefreshedTokens:
+            async with _oidc_http_client() as client:
+                tokens = await refresh_tokens(client, oidc_config, refresh_token=refresh_token)
+            return RefreshedTokens(
+                access_token=tokens.access_token,
+                refresh_token=tokens.refresh_token,
+                expires_in=tokens.expires_in,
+            )
+
+        def token_provider_factory(session_id: str):  # type: ignore[misc]
+            return sessions.refreshing_token_provider(session_id, refresher=_refresher)
+
+    workbench = build_workbench(config, sessions, history, token_provider_factory=token_provider_factory)
     gr.mount_gradio_app(app, workbench, path="/workbench", auth_dependency=auth_dependency)
     return app
 
@@ -262,6 +331,7 @@ def _identity_page(session: Session) -> str:
 def main() -> None:
     import uvicorn
 
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:    %(name)s: %(message)s")
     config = AppConfig.from_env()
     uvicorn.run(build_app(config), host=config.ui_host, port=config.ui_port)
 

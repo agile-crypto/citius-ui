@@ -57,9 +57,19 @@ class AppConfig:
     citius_tls_server_name: str | None = None
     citius_request_timeout_seconds: float = 10.0
     oidc_config_path: Path = Path("../citius-server/bootstrap/zitadel/citius-ui-auth.json")
+    oidc_ca_cert: Path | None = None
     session_cookie_name: str = "citius_session"
     session_cookie_secure: bool = True
     history_limit: int = 200
+
+    @property
+    def effective_oidc_ca(self) -> Path | None:
+        """CA used to trust the Zitadel JWKS fetch.
+
+        Falls back to the gRPC TLS CA so a single local mkcert root covers both
+        the server endpoint and the Zitadel issuer in development.
+        """
+        return self.oidc_ca_cert or self.citius_tls_ca
 
     def __post_init__(self) -> None:
         if not self.ui_host or self.ui_host != self.ui_host.strip():
@@ -100,6 +110,7 @@ class AppConfig:
             citius_tls_server_name=server_name,
             citius_request_timeout_seconds=_number(source, "CITIUS_REQUEST_TIMEOUT_SECONDS", 10.0),
             oidc_config_path=Path(oidc_path).expanduser(),
+            oidc_ca_cert=_optional_path(source, "CITIUS_OIDC_CA_CERT"),
             session_cookie_name=source.get("CITIUS_SESSION_COOKIE_NAME", "citius_session"),
             session_cookie_secure=_boolean(source, "CITIUS_SESSION_COOKIE_SECURE", True),
             history_limit=_integer(source, "CITIUS_HISTORY_LIMIT", 200),

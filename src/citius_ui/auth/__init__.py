@@ -2,6 +2,7 @@
 
 from citius_ui.auth.demo_personas import DEMO_PERSONAS, DemoPersona, get_persona
 from citius_ui.auth.oidc import (
+    Identity,
     OIDCConfig,
     OIDCError,
     PkceChallenge,
@@ -12,6 +13,7 @@ from citius_ui.auth.oidc import (
     exchange_code,
     load_oidc_config,
     refresh_tokens,
+    validate_id_token,
 )
 from citius_ui.auth.redaction import REDACTED, redact
 from citius_ui.auth.sessions import Session, SessionStore
@@ -20,6 +22,7 @@ __all__ = [
     "DEMO_PERSONAS",
     "REDACTED",
     "DemoPersona",
+    "Identity",
     "OIDCConfig",
     "OIDCError",
     "PkceChallenge",
@@ -34,4 +37,5 @@ __all__ = [
     "load_oidc_config",
     "redact",
     "refresh_tokens",
+    "validate_id_token",
 ]

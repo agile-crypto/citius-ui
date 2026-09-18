@@ -13,13 +13,28 @@ import base64
 import hashlib
 import json
 import secrets
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
+import jwt
+from jwt import PyJWKClient
 
 _DEFAULT_SCOPES = ("openid", "profile", "email", "offline_access")
+
+# Signing algorithms Zitadel advertises for ID tokens. Symmetric algorithms are
+# deliberately excluded so a leaked shared secret can never forge an ID token.
+_ALLOWED_ID_TOKEN_ALGS = (
+    "EdDSA",
+    "RS256",
+    "RS384",
+    "RS512",
+    "ES256",
+    "ES384",
+    "ES512",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +59,10 @@ class OIDCConfig:
     @property
     def end_session_endpoint(self) -> str:
         return f"{self.issuer.rstrip('/')}/oidc/v1/end_session"
+
+    @property
+    def jwks_uri(self) -> str:
+        return f"{self.issuer.rstrip('/')}/oauth/v2/keys"
 
 
 def load_oidc_config(path: Path | str) -> OIDCConfig:
@@ -157,16 +176,19 @@ async def exchange_code(
     code_verifier: str,
 ) -> TokenSet:
     """Exchange an authorization code for tokens using PKCE (no client secret)."""
-    response = await client.post(
-        config.token_endpoint,
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": config.redirect_uri,
-            "client_id": config.client_id,
-            "code_verifier": code_verifier,
-        },
-    )
+    try:
+        response = await client.post(
+            config.token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": config.redirect_uri,
+                "client_id": config.client_id,
+                "code_verifier": code_verifier,
+            },
+        )
+    except httpx.TransportError as exc:
+        raise OIDCError(f"could not reach the token endpoint: {exc}") from exc
     if response.status_code != httpx.codes.OK:
         raise OIDCError(f"token exchange failed with status {response.status_code}")
     return TokenSet.from_response(response.json())
@@ -179,14 +201,17 @@ async def refresh_tokens(
     refresh_token: str,
 ) -> TokenSet:
     """Exchange a refresh token for a new token set."""
-    response = await client.post(
-        config.token_endpoint,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": config.client_id,
-        },
-    )
+    try:
+        response = await client.post(
+            config.token_endpoint,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": config.client_id,
+            },
+        )
+    except httpx.TransportError as exc:
+        raise OIDCError(f"could not reach the token endpoint: {exc}") from exc
     if response.status_code != httpx.codes.OK:
         raise OIDCError(f"token refresh failed with status {response.status_code}")
     return TokenSet.from_response(response.json())
@@ -201,3 +226,105 @@ def end_session_url(config: OIDCConfig, *, id_token: str = "") -> str:
     if id_token:
         params["id_token_hint"] = id_token
     return f"{config.end_session_endpoint}?{urlencode(params)}"
+
+
+@dataclass(frozen=True, slots=True)
+class Identity:
+    """Displayable identity derived from validated ID-token claims.
+
+    Only non-sensitive claims are retained. Never carries the raw token.
+    """
+
+    subject: str
+    display_name: str
+    username: str = ""
+    email: str = ""
+    claims: dict[str, object] = field(default_factory=dict)
+
+
+class _JWKSCache:
+    """Process-wide cache of PyJWKClient instances keyed by JWKS URI.
+
+    PyJWKClient caches signing keys internally and refreshes on cache miss, so
+    Zitadel key rotation is handled transparently. A CA file may be supplied so
+    the JWKS fetch trusts the local mkcert root during development.
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[tuple[str, str], PyJWKClient] = {}
+
+    def get(self, jwks_uri: str, *, ca_cert: str | None = None) -> PyJWKClient:
+        key = (jwks_uri, ca_cert or "")
+        client = self._clients.get(key)
+        if client is None:
+            ssl_context = None
+            if ca_cert:
+                import ssl
+
+                ssl_context = ssl.create_default_context(cafile=ca_cert)
+            client = PyJWKClient(jwks_uri, cache_keys=True, ssl_context=ssl_context)
+            self._clients[key] = client
+        return client
+
+
+_JWKS_CACHE = _JWKSCache()
+
+
+def validate_id_token(
+    id_token: str,
+    config: OIDCConfig,
+    *,
+    nonce: str,
+    ca_cert: str | None = None,
+    leeway: int = 30,
+    now: int | None = None,
+) -> Identity:
+    """Verify an ID token's signature and issuer/audience/nonce/expiry claims.
+
+    The signature is verified against the issuer's JWKS. The issuer must match
+    the configured issuer exactly, the audience must include the web-app client
+    id, the token must be unexpired, and the nonce must equal the one bound to
+    this login attempt. Returns the displayable identity on success.
+    """
+    if not id_token:
+        raise OIDCError("no id_token returned; cannot validate identity")
+    jwks = _JWKS_CACHE.get(config.jwks_uri, ca_cert=ca_cert)
+    try:
+        signing_key = jwks.get_signing_key_from_jwt(id_token)
+    except Exception as exc:  # PyJWK raises a variety of key-resolution errors.
+        raise OIDCError(f"could not resolve ID-token signing key: {exc}") from exc
+    try:
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
+            audience=config.client_id,
+            issuer=config.issuer,
+            leeway=leeway,
+            options={"require": ["exp", "iat", "iss", "aud", "sub"]},
+        )
+    except jwt.InvalidTokenError as exc:
+        raise OIDCError(f"invalid ID token: {exc}") from exc
+
+    token_nonce = claims.get("nonce")
+    if not nonce or token_nonce != nonce:
+        raise OIDCError("ID-token nonce does not match the login request")
+
+    # Redundant explicit expiry check independent of PyJWT leeway handling.
+    moment = int(time.time()) if now is None else now
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)) and moment - leeway >= int(exp):
+        raise OIDCError("ID token is expired")
+
+    subject = str(claims.get("sub", "")).strip()
+    if not subject:
+        raise OIDCError("ID token has no subject claim")
+    username = str(claims.get("preferred_username") or claims.get("email") or "").strip()
+    display_name = str(claims.get("name") or claims.get("preferred_username") or username or subject).strip()
+    return Identity(
+        subject=subject,
+        display_name=display_name,
+        username=username,
+        email=str(claims.get("email", "")).strip(),
+        claims=claims,
+    )

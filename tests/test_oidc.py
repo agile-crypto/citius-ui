@@ -159,6 +159,18 @@ async def test_exchange_code_raises_on_error_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exchange_code_maps_transport_error_to_oidc_error() -> None:
+    config = load_oidc_config_dict()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("TLS verify failed")
+
+    async with _mock_client(handler) as client:
+        with pytest.raises(OIDCError, match="token endpoint"):
+            await exchange_code(client, config, code="c", code_verifier="v")
+
+
+@pytest.mark.asyncio
 async def test_exchange_code_requires_access_token() -> None:
     config = load_oidc_config_dict()
 

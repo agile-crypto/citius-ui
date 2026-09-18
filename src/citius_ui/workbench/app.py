@@ -11,6 +11,7 @@ are listed honestly as unavailable.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import gradio as gr
@@ -113,10 +114,22 @@ def _render_input(spec: FormField) -> gr.components.Component:
     return gr.Textbox(label=label, placeholder=spec.placeholder)
 
 
-def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHistoryStore) -> gr.Blocks:
-    """Build the Gradio Workbench that executes actions for the current session."""
+def build_workbench(
+    config: AppConfig,
+    sessions: SessionStore,
+    history: MemoryHistoryStore,
+    *,
+    token_provider_factory: Callable[[str], Callable[[], Awaitable[str]]] | None = None,
+) -> gr.Blocks:
+    """Build the Gradio Workbench that executes actions for the current session.
+
+    ``token_provider_factory`` maps a session id to the async token provider used
+    for that session's RPCs. It defaults to the store's plain provider; the host
+    injects a refreshing provider when OIDC refresh is configured.
+    """
 
     grouped = registry_overview()
+    make_provider = token_provider_factory or sessions.token_provider
 
     def _run_form(
         spec: RpcFormSpec,
@@ -126,7 +139,7 @@ def build_workbench(config: AppConfig, sessions: SessionStore, history: MemoryHi
             if session is None:
                 return "UNAUTHENTICATED", "No active session. Sign in again.", gr.update()
             payload = build_request(spec, list(values))
-            clients = CitiusClients(config, sessions.token_provider(session.id))
+            clients = CitiusClients(config, make_provider(session.id))
             registry = build_registry(clients)
             action = registry.get(spec.service, spec.method)
             executor = ActionExecutor(history)
