@@ -124,10 +124,19 @@ def authorization_url(
     *,
     scopes: tuple[str, ...] = _DEFAULT_SCOPES,
 ) -> str:
-    """Build the Zitadel authorization URL for Authorization Code with PKCE."""
+    """Build the Zitadel authorization URL for Authorization Code with PKCE.
+
+    The configured ``audience`` is appended to the requested scopes. For Zitadel
+    it is the reserved ``urn:zitadel:iam:org:project:id:<project>:aud`` value,
+    which is what makes Zitadel embed the Citius project audience in the issued
+    access token. Without it the token carries no Citius audience and the server
+    rejects every RPC as UNAUTHENTICATED.
+    """
     effective = scopes
     if not config.enable_refresh_tokens:
         effective = tuple(scope for scope in scopes if scope != "offline_access")
+    if config.audience and config.audience not in effective:
+        effective = (*effective, config.audience)
     params = {
         "client_id": config.client_id,
         "response_type": "code",

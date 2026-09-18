@@ -85,6 +85,25 @@ def test_authorization_url_contains_pkce_and_state() -> None:
     assert query["state"] == [pkce.state]
     assert query["nonce"] == [pkce.nonce]
     assert "offline_access" in query["scope"][0]
+    # The configured audience must be requested as a scope so Zitadel embeds the
+    # Citius project audience in the access token.
+    assert config.audience in query["scope"][0].split(" ")
+
+
+def test_authorization_url_includes_project_audience_scope() -> None:
+    config = OIDCConfig(
+        issuer="https://issuer",
+        client_id="c",
+        audience="urn:zitadel:iam:org:project:id:12345:aud",
+        redirect_uri="http://127.0.0.1/cb",
+        post_logout_redirect_uri="http://127.0.0.1/",
+        enable_refresh_tokens=True,
+    )
+    query = parse_qs(urlparse(authorization_url(config, create_pkce_challenge())).query)
+    scopes = query["scope"][0].split(" ")
+    assert "urn:zitadel:iam:org:project:id:12345:aud" in scopes
+    # The audience is appended exactly once.
+    assert scopes.count("urn:zitadel:iam:org:project:id:12345:aud") == 1
 
 
 def test_authorization_url_omits_offline_access_without_refresh() -> None:
