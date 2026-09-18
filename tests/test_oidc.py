@@ -318,3 +318,43 @@ async def test_fetch_userinfo_rejects_non_json_response() -> None:
     async with _mock_client(handler) as client:
         with pytest.raises(OIDCError, match="non-JSON"):
             await fetch_userinfo(client, config, access_token="at-1")
+
+
+def test_refine_identity_prefers_userinfo_name_and_username() -> None:
+    from citius_ui.auth.oidc import Identity, refine_identity
+
+    identity = Identity(subject="391313365793767427", display_name="391313365793767427")
+    claims = {"sub": "391313365793767427", "name": "Citius CISO", "preferred_username": "citius-ciso"}
+    refined = refine_identity(identity, claims)
+    assert refined.display_name == "Citius CISO"
+    assert refined.username == "citius-ciso"
+    assert refined.subject == "391313365793767427"
+
+
+def test_refine_identity_falls_back_to_preferred_username_without_name() -> None:
+    from citius_ui.auth.oidc import Identity, refine_identity
+
+    identity = Identity(subject="sub-1", display_name="sub-1")
+    claims = {"sub": "sub-1", "preferred_username": "citius-producer"}
+    refined = refine_identity(identity, claims)
+    assert refined.display_name == "citius-producer"
+    assert refined.username == "citius-producer"
+
+
+def test_refine_identity_ignores_mismatched_subject() -> None:
+    from citius_ui.auth.oidc import Identity, refine_identity
+
+    identity = Identity(subject="sub-1", display_name="sub-1")
+    claims = {"sub": "someone-else", "name": "Not This User"}
+    refined = refine_identity(identity, claims)
+    assert refined is identity
+
+
+def test_refine_identity_keeps_existing_values_when_claims_absent() -> None:
+    from citius_ui.auth.oidc import Identity, refine_identity
+
+    identity = Identity(subject="sub-1", display_name="Already Correct", username="u", email="e@example.com")
+    refined = refine_identity(identity, {"sub": "sub-1"})
+    assert refined.display_name == "Already Correct"
+    assert refined.username == "u"
+    assert refined.email == "e@example.com"

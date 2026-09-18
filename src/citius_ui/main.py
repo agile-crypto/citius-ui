@@ -30,6 +30,7 @@ from citius_ui.auth.oidc import (
     extract_grants,
     fetch_userinfo,
     load_oidc_config,
+    refine_identity,
     refresh_tokens,
     validate_id_token,
 )
@@ -227,6 +228,10 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
                 claims.update(await fetch_userinfo(client, oidc_config, access_token=tokens.access_token))
         except OIDCError as exc:
             _log.warning("OIDC userinfo fetch failed; deriving grants from ID-token claims only: %s", exc)
+        # Zitadel commonly returns profile claims (name, preferred_username)
+        # only via userinfo, not the ID token, so the display name is refined
+        # from the same merged claims rather than the ID-token-only identity.
+        identity = refine_identity(identity, claims)
         grants = extract_grants(claims)
         if not grants.permissions:
             _log.warning(

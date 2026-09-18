@@ -251,6 +251,44 @@ def test_auth_callback_grants_from_id_token_when_userinfo_unavailable(
     assert body["permissions"] == ["citius:crypto:verify"]
 
 
+def test_auth_callback_prefers_userinfo_display_name_over_bare_subject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reproduces the reported bug: when the OIDC app doesn't embed profile
+    # claims in the ID token, validate_id_token falls back to the subject as
+    # the display name ("391313365793767427" instead of "Citius CISO"). The
+    # callback must recover the real name from the userinfo claims.
+    import citius_ui.main as main_module
+    from citius_ui.auth.oidc import Identity, TokenSet
+
+    async def fake_exchange(_client: object, _config: object, **_kwargs: object) -> TokenSet:
+        return TokenSet(access_token="at", refresh_token="rt", id_token="idt", expires_in=3600)
+
+    def fake_validate(*_args: object, **_kwargs: object) -> Identity:
+        return Identity(subject="391313365793767427", display_name="391313365793767427")
+
+    async def fake_userinfo(_client: object, _config: object, *, access_token: str) -> dict[str, object]:
+        return {
+            "sub": "391313365793767427",
+            "name": "Citius CISO",
+            "preferred_username": "citius-ciso",
+            "urn:citius:permissions": ["citius:policy:read"],
+        }
+
+    monkeypatch.setattr(main_module, "exchange_code", fake_exchange)
+    monkeypatch.setattr(main_module, "validate_id_token", fake_validate)
+    monkeypatch.setattr(main_module, "fetch_userinfo", fake_userinfo)
+
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=_oidc_config_file(tmp_path))
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+
+    state = _state_from_login(client)
+    assert client.get(f"/auth/callback?code=auth-code&state={state}").status_code == 303
+    body = client.get("/identity").json()
+    assert body["display_name"] == "Citius CISO"
+    assert body["subject"] == "391313365793767427"
+
+
 def test_auth_callback_rejects_invalid_id_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import citius_ui.main as main_module
     from citius_ui.auth.oidc import OIDCError, TokenSet

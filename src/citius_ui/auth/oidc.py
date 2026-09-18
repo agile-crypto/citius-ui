@@ -14,7 +14,7 @@ import hashlib
 import json
 import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -296,6 +296,31 @@ class Identity:
     email: str = ""
     roles: frozenset[str] = frozenset()
     claims: dict[str, object] = field(default_factory=dict)
+
+
+def refine_identity(identity: Identity, claims: dict[str, object]) -> Identity:
+    """Recompute username/display_name/email from claims that may include userinfo.
+
+    Zitadel only embeds profile claims (name, preferred_username, email) in the
+    ID token when the application enables "user info inside ID token"; the
+    common configuration returns them from the userinfo endpoint only. Callers
+    merge userinfo claims onto the validated ID-token claims and pass the
+    result here so the display name isn't left as the bare subject. The
+    userinfo response's subject must match the validated identity's subject —
+    a mismatch is ignored rather than trusted, since userinfo is fetched with
+    the access token and is not itself signature-verified like the ID token.
+    """
+    if str(claims.get("sub", "")).strip() != identity.subject:
+        return identity
+    name = str(claims.get("name") or "").strip()
+    preferred_username = str(claims.get("preferred_username") or "").strip()
+    email = str(claims.get("email") or "").strip()
+    # Only overwrite a field when the merged claims independently supply a
+    # replacement; otherwise keep the identity's existing value rather than
+    # falling back to another field's value (e.g. username) and clobbering it.
+    username = preferred_username or email or identity.username
+    display_name = name or preferred_username or identity.display_name
+    return replace(identity, username=username, display_name=display_name, email=email or identity.email)
 
 
 @dataclass(frozen=True, slots=True)
