@@ -14,8 +14,10 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import citius_sdk as sdk
 from citius_api.messages.metadata_pb2 import OperationMetadata as OperationMetadataProto
 from citius_api.types import common_pb2 as common_types
+from citius_api.types import implementation_pb2 as common_impl
 from citius_sdk.errors import CitiusError
 from citius_sdk.services import crypto as sdk_crypto
 from citius_sdk.services import crypto_policy as sdk_policy
@@ -169,8 +171,6 @@ def _metadata_proto(value: Any) -> OperationMetadataProto:
     return parsed
 
 
-KEY_SCOPES = ("signature", "signature_prehashed", "aead")
-
 _SIGNATURE_TEMPLATE_PREFIXES = (
     "ecdsa-",
     "ed25519",
@@ -184,67 +184,110 @@ _SIGNATURE_TEMPLATE_PREFIXES = (
 _AEAD_TEMPLATE_MARKERS = ("gcm", "chacha20-poly1305")
 
 
-def _scope_spec(scope: str) -> common_types.ScopeSpecification:
-    normalized = scope.strip().lower()
-    if normalized == "signature":
-        return common_types.ScopeSpecification(
-            signature=common_types.SignatureScopeSpec(scope=common_types.SIGNATURE_SCOPE_STANDARD)
-        )
-    if normalized == "signature_prehashed":
-        return common_types.ScopeSpecification(
-            signature=common_types.SignatureScopeSpec(scope=common_types.SIGNATURE_SCOPE_PREHASHED)
-        )
-    if normalized == "aead":
-        return common_types.ScopeSpecification(aead=common_types.AeadScopeSpec(scope=common_types.AEAD_SCOPE_STANDARD))
-    raise RequestError(f"unsupported scope {scope!r} (supported: {', '.join(KEY_SCOPES)})")
+_LEGACY_SCOPE_ALIASES = {
+    "signature": "SIGNATURE_STANDARD",
+    "signature_prehashed": "SIGNATURE_PREHASHED",
+    "aead": "AEAD_STANDARD",
+}
 
 
-# Scope-parameter oneof arms per crypto request family. user_context is a plain
-# map field that may accompany any arm.
-SIGNATURE_SCOPE_PARAM_KEYS = frozenset({"no_context", "domain_context", "vendor_context", "user_context"})
-DIGEST_SCOPE_PARAM_KEYS = SIGNATURE_SCOPE_PARAM_KEYS | {"hash_algorithm", "hash_algorithm_oid"}
-ENCRYPTION_SCOPE_PARAM_KEYS = frozenset(
-    {"no_params", "aead_params", "xts_params", "asymmetric_params", "vendor_params", "user_context"}
-)
-
-
-def _scope_params_dict(request: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any] | None:
-    """Parse and validate the optional 'scope_params' request field."""
-    raw = request.get("scope_params")
-    if raw is None or raw == "":
-        return None
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RequestError(f"'scope_params' is not valid JSON: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise RequestError("'scope_params' must be a JSON object")
-    unknown = set(raw) - allowed
-    if unknown:
-        raise RequestError(f"unknown scope parameter(s) {sorted(unknown)}; supported for this RPC: {sorted(allowed)}")
-    return raw
-
-
-def _apply_scope_params(built: Any, request: dict[str, Any], *, allowed: frozenset[str], default_arm: str) -> None:
-    """Set the request's scope_params oneof from the optional request field.
-
-    The server requires one arm of the oneof to be set. When 'scope_params' is
-    absent, ``default_arm`` (matching the scope the Workbench creates keys
-    with) is selected; when present, its keys are merged onto the request
-    proto, so e.g. {"aead_params": {"aad": "<base64>"}} or
-    {"domain_context": {"context": "<base64>"}} selects and populates an arm.
-    """
-    params = _scope_params_dict(request, allowed)
-    if params is None:
-        getattr(built, default_arm).SetInParent()
-        return
+def _resolve_scope(scope: str) -> sdk.Scope:
+    """Map a scope string (SDK name or legacy shorthand) to an SDK Scope."""
+    name = _LEGACY_SCOPE_ALIASES.get(scope.strip().lower(), scope.strip().upper())
     try:
-        ParseDict(params, built, ignore_unknown_fields=False)
-    except ParseError as exc:
-        raise RequestError(f"'scope_params' does not match the request schema: {exc}") from exc
-    if built.WhichOneof("scope_params") is None:
-        getattr(built, default_arm).SetInParent()
+        return sdk.Scope[name]
+    except KeyError as exc:
+        supported = ", ".join(member.name for member in sdk.Scope)
+        raise RequestError(f"unsupported scope {scope!r} (supported: {supported})") from exc
+
+
+def _tristate(request: dict[str, Any], key: str) -> bool | None:
+    """Read an optional tri-state ('true'/'false'/unset) filter field."""
+    value = request.get(key)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    raise RequestError(f"'{key}' must be true, false, or blank")
+
+
+def _enum_member(enum_cls: Any, request: dict[str, Any], key: str) -> Any | None:
+    """Read an optional enum-name field into the given SDK enum, or None."""
+    value = request.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        return enum_cls[str(value).strip().upper()]
+    except KeyError as exc:
+        supported = ", ".join(member.name for member in enum_cls)
+        raise RequestError(f"'{key}' must be one of: {supported}") from exc
+
+
+def _security_properties(request: dict[str, Any]) -> sdk.SecurityProperties | None:
+    """Build SecurityProperties from the friendly filter fields, or None."""
+    strength = request.get("security_strength_bits")
+    level = _enum_member(sdk.NistSecurityLevel, request, "nist_security_level")
+    status = _enum_member(sdk.NistStatus, request, "nist_status")
+    quantum_safe = _tristate(request, "quantum_safe")
+    fips_approved = _tristate(request, "fips_approved")
+    if all(v in (None, "", 0) for v in (strength, level, status, quantum_safe, fips_approved)):
+        return None
+    return sdk.SecurityProperties(
+        security_strength_bits=int(strength) if strength else 0,
+        nist_security_level=level or sdk.NistSecurityLevel.UNSPECIFIED,
+        quantum_safe=quantum_safe,
+        nist_status=status or sdk.NistStatus.UNSPECIFIED,
+        fips_approved=fips_approved,
+    )
+
+
+def _provider_requirements(request: dict[str, Any]) -> sdk.ProviderRequirements | None:
+    """Build ProviderRequirements from the friendly toggle fields, or None.
+
+    An explicit 'provider_requirements' JSON object wins over the toggles.
+    """
+    override = request.get("provider_requirements")
+    if override not in (None, ""):
+        if isinstance(override, str):
+            try:
+                override = json.loads(override)
+            except json.JSONDecodeError as exc:
+                raise RequestError(f"'provider_requirements' is not valid JSON: {exc}") from exc
+        if not isinstance(override, dict):
+            raise RequestError("'provider_requirements' must be a JSON object")
+        try:
+            proto: Any = ParseDict(override, common_impl.ProviderRequirements(), ignore_unknown_fields=False)
+        except ParseError as exc:
+            raise RequestError(f"'provider_requirements' does not match the schema: {exc}") from exc
+        return _ProtoProviderRequirements(proto)
+    min_fips = _enum_member(sdk.Fips140Level, request, "min_fips_level")
+    toggles = {
+        "fips_140_certified": bool(request.get("require_fips_140", False)),
+        "common_criteria_certified": bool(request.get("require_common_criteria", False)),
+        "memory_safe": bool(request.get("require_memory_safe", False)),
+        "constant_time": bool(request.get("require_constant_time", False)),
+        "side_channel_hardened": bool(request.get("require_side_channel_hardened", False)),
+        "no_known_cve": bool(request.get("require_no_known_cve", False)),
+        "prefer_hardware_accelerated": bool(request.get("prefer_hardware_accelerated", False)),
+    }
+    if min_fips is None and not any(toggles.values()):
+        return None
+    return sdk.ProviderRequirements(min_fips_level=min_fips or sdk.Fips140Level.UNSPECIFIED, **toggles)
+
+
+class _ProtoProviderRequirements:
+    """Adapter that lets a raw ProviderRequirements proto flow through the SDK builder path."""
+
+    def __init__(self, proto: Any) -> None:
+        self._proto = proto
+
+    def to_proto(self) -> Any:
+        return self._proto
 
 
 def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
@@ -252,10 +295,9 @@ def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
 
     The server rejects key creation without a scope specification even when a
     template is given, and the template must match the scope. An explicit
-    'scope_spec' JSON object wins (full ScopeSpecification control, e.g.
-    security properties or primitives the shorthand does not cover), then an
-    explicit 'scope' shorthand; otherwise the scope is inferred from the
-    template id.
+    'scope_spec' JSON object wins (full ScopeSpecification control), then an
+    explicit 'scope' name/shorthand combined with the friendly security
+    filters; otherwise the scope is inferred from the template id.
     """
     spec_json = request.get("scope_spec")
     if spec_json not in (None, ""):
@@ -278,22 +320,118 @@ def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
                 '{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}} or {"aead": {"scope": "AEAD_SCOPE_STANDARD"}}'
             )
         return spec
-    scope = str(request.get("scope") or "").strip()
-    if scope:
-        return _scope_spec(scope)
+    scope_name = str(request.get("scope") or "").strip()
+    if not scope_name:
+        scope_name = _infer_scope_from_template(request)
+    try:
+        built_spec: common_types.ScopeSpecification = sdk.build_scope_spec(
+            _resolve_scope(scope_name), security=_security_properties(request)
+        )
+    except ValueError as exc:
+        raise RequestError(str(exc)) from exc
+    return built_spec
+
+
+def _infer_scope_from_template(request: dict[str, Any]) -> str:
+    """Infer an SDK scope name from a template id, matching legacy behaviour."""
     template_id = str(request.get("template_id") or "").strip().lower()
     if not template_id:
-        raise RequestError(f"'scope' is required when no template_id is given (supported: {', '.join(KEY_SCOPES)})")
+        supported = ", ".join(member.name for member in sdk.Scope)
+        raise RequestError(f"'scope' is required when no template_id is given (supported: {supported})")
     if "prehashed" in template_id:
-        return _scope_spec("signature_prehashed")
+        return "SIGNATURE_PREHASHED"
     if template_id.startswith(_SIGNATURE_TEMPLATE_PREFIXES):
-        return _scope_spec("signature")
+        return "SIGNATURE_STANDARD"
     if any(marker in template_id for marker in _AEAD_TEMPLATE_MARKERS):
-        return _scope_spec("aead")
-    raise RequestError(
-        f"cannot infer a key scope from template {template_id!r}; "
-        f"set 'scope' explicitly (supported: {', '.join(KEY_SCOPES)})"
-    )
+        return "AEAD_STANDARD"
+    raise RequestError(f"cannot infer a key scope from template {template_id!r}; set 'scope' explicitly")
+
+
+# ── Crypto operation parameters / signature contexts ──────────────────────────
+#
+# Friendly fields (aad, domain_context, hash_algorithm) build the SDK params/
+# context objects. An advanced 'scope_params' JSON object overrides them for
+# full oneof control (e.g. xts_params, vendor_params, user_context).
+
+SIGNATURE_SCOPE_PARAM_KEYS = frozenset({"no_context", "domain_context", "vendor_context", "user_context"})
+DIGEST_SCOPE_PARAM_KEYS = SIGNATURE_SCOPE_PARAM_KEYS | {"hash_algorithm", "hash_algorithm_oid"}
+ENCRYPTION_SCOPE_PARAM_KEYS = frozenset(
+    {"no_params", "aead_params", "xts_params", "asymmetric_params", "vendor_params", "user_context"}
+)
+
+
+def _scope_params_override(request: dict[str, Any], allowed: frozenset[str]) -> dict[str, Any] | None:
+    """Parse and validate the optional advanced 'scope_params' JSON override."""
+    raw = request.get("scope_params")
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RequestError(f"'scope_params' is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RequestError("'scope_params' must be a JSON object")
+    unknown = set(raw) - allowed
+    if unknown:
+        raise RequestError(f"unknown scope parameter(s) {sorted(unknown)}; supported for this RPC: {sorted(allowed)}")
+    return raw
+
+
+def _apply_scope_params_override(built: Any, override: dict[str, Any]) -> None:
+    """Merge an advanced scope_params JSON override onto a crypto request proto."""
+    try:
+        ParseDict(override, built, ignore_unknown_fields=False)
+    except ParseError as exc:
+        raise RequestError(f"'scope_params' does not match the request schema: {exc}") from exc
+
+
+def _finalize_scope_params(built: Any, request: dict[str, Any], *, allowed: frozenset[str], default_arm: str) -> None:
+    """Reconcile friendly params, an advanced JSON override, and the required arm.
+
+    The friendly fields (already applied by the SDK builder) set an arm when
+    present. An advanced 'scope_params' JSON override wins over them. If no arm
+    ends up set, ``default_arm`` is selected because the server requires one.
+    """
+    override = _scope_params_override(request, allowed)
+    if override is not None:
+        built.ClearField("scope_params")
+        _apply_scope_params_override(built, override)
+    if built.WhichOneof("scope_params") is None:
+        getattr(built, default_arm).SetInParent()
+
+
+def _optional_base64(request: dict[str, Any], key: str) -> bytes | None:
+    """Decode an optional base64 field (tolerating whitespace), or None if blank."""
+    value = request.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    raw = "".join(str(value).split())
+    try:
+        return base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RequestError(f"'{key}' is not valid base64: {exc}") from exc
+
+
+def _encryption_params(request: dict[str, Any]) -> sdk.AeadParams | None:
+    """Build encryption params from the friendly 'aad' field, or None."""
+    aad = _optional_base64(request, "aad")
+    if aad is None:
+        return None
+    return sdk.AeadParams(aad=aad)
+
+
+def _signature_context(request: dict[str, Any]) -> sdk.DomainContext | None:
+    """Build a signature context from the friendly 'domain_context' field, or None."""
+    context = _optional_base64(request, "domain_context")
+    if context is None:
+        return None
+    return sdk.DomainContext(context=context)
+
+
+def _hash_algorithm(request: dict[str, Any]) -> sdk.HashAlgorithm | None:
+    """Read the friendly 'hash_algorithm' field into the SDK enum, or None."""
+    return _enum_member(sdk.HashAlgorithm, request, "hash_algorithm")
 
 
 def _policy_document(request: dict[str, Any]) -> str:
@@ -358,11 +496,13 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def encrypt(request: dict[str, Any]) -> RpcResult:
         try:
             built = sdk_crypto.encrypt_request(
-                _require_text(request, "key_name"), _as_bytes(_require(request, "plaintext"))
+                _require_text(request, "key_name"),
+                _as_bytes(_require(request, "plaintext")),
+                params=_encryption_params(request),
             )
-            # The server requires the scope_params oneof; default to standard
-            # AEAD parameters, matching the aead key scope the Workbench creates.
-            _apply_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
+            # The server requires the scope_params oneof; an advanced override
+            # wins, else default to standard AEAD parameters.
+            _finalize_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
             result = await clients.crypto.encrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -387,10 +527,14 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def sign(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_crypto.sign_request(_require_text(request, "key_name"), _as_bytes(_require(request, "message")))
-            # The server requires the scope_params oneof; no_context selects
-            # the standard signature scope the Workbench creates keys with.
-            _apply_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
+            built = sdk_crypto.sign_request(
+                _require_text(request, "key_name"),
+                _as_bytes(_require(request, "message")),
+                context=_signature_context(request),
+            )
+            # The server requires the scope_params oneof; an override wins, else
+            # no_context selects the standard signature scope.
+            _finalize_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -434,8 +578,9 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _require_text(request, "key_name"),
                 _base64_field(request, "ciphertext"),
                 _metadata_proto(request.get("metadata")),
+                params=_encryption_params(request),
             )
-            _apply_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
+            _finalize_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
             result = await clients.crypto.decrypt(built)
         except CitiusError as error:
             return error_result(error)
@@ -451,8 +596,9 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _as_bytes(_require(request, "message")),
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
+                context=_signature_context(request),
             )
-            _apply_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
+            _finalize_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.verify(built)
         except CitiusError as error:
             return error_result(error)
@@ -460,8 +606,13 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def digest_sign(request: dict[str, Any]) -> RpcResult:
         try:
-            built = sdk_crypto.digest_sign_request(_require_text(request, "key_name"), _base64_field(request, "digest"))
-            _apply_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
+            built = sdk_crypto.digest_sign_request(
+                _require_text(request, "key_name"),
+                _base64_field(request, "digest"),
+                context=_signature_context(request),
+                hash_algorithm=_hash_algorithm(request),
+            )
+            _finalize_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.digest_sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -478,8 +629,10 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "digest"),
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
+                context=_signature_context(request),
+                hash_algorithm=_hash_algorithm(request),
             )
-            _apply_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
+            _finalize_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.digest_verify(built)
         except CitiusError as error:
             return error_result(error)
@@ -550,11 +703,15 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             built = sdk_keys.create_key_request(
                 _require_text(request, "name"),
                 policy=request.get("policy", ""),
-                template_id=request.get("template_id", ""),
+                template_id=request.get("template_id") or "scope-spec-carrier",
                 provider_id=request.get("provider_id", ""),
+                provider_requirements=_provider_requirements(request),
             )
-            # The SDK builder does not cover scope_spec yet, but the server
-            # requires a scope even when a template is given.
+            if not request.get("template_id"):
+                built.ClearField("template_id")
+            # The server requires a scope even when a template is given; the
+            # scope spec carries the friendly security-property filters and is
+            # built through the SDK vocabulary (sdk.build_scope_spec).
             built.scope_spec.CopyFrom(_key_scope_spec(request))
             result = await clients.key_management.create_key(built)
         except CitiusError as error:

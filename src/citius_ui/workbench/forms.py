@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+import citius_sdk as _sdk
+
 
 @dataclass(frozen=True, slots=True)
 class FormField:
@@ -40,7 +42,19 @@ class RpcFormSpec:
 
 
 _POLICY_FORMATS = ("json", "rego", "cedar", "yaml")
-_KEY_SCOPES = ("signature", "signature_prehashed", "aead")
+
+# Full intent-oriented scope vocabulary, sourced from the SDK Scope enum so the
+# dropdown and the SDK stay in lock-step. A blank leading entry keeps "infer
+# from template" as the default.
+_KEY_SCOPES: tuple[str, ...] = ("", *(scope.name for scope in _sdk.Scope))
+
+# Optional filter-property choices, aligned with the SDK enums. A blank entry
+# means "leave unset" so the property is not sent to the server.
+_NIST_LEVELS: tuple[str, ...] = ("", *(level.name for level in _sdk.NistSecurityLevel))
+_NIST_STATUSES: tuple[str, ...] = ("", *(status.name for status in _sdk.NistStatus))
+_FIPS_LEVELS: tuple[str, ...] = ("", *(level.name for level in _sdk.Fips140Level))
+_TRISTATE: tuple[str, ...] = ("", "true", "false")
+_HASH_ALGORITHMS: tuple[str, ...] = ("", *(algorithm.name for algorithm in _sdk.HashAlgorithm))
 
 # Policy documents must match the server's rules_json schema exactly: JSON with
 # version "1", allowed_operations.key_operations using lowercase operation
@@ -145,17 +159,81 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 choices=_KEY_SCOPES,
                 optional=True,
             ),
+            # Security-property filters (all optional; blank = leave unset).
+            FormField("security_strength_bits", "Min security strength (bits)", kind="number", optional=True),
+            FormField(
+                "nist_security_level", "NIST security level", kind="dropdown", choices=_NIST_LEVELS, optional=True
+            ),
+            FormField("nist_status", "NIST status", kind="dropdown", choices=_NIST_STATUSES, optional=True),
+            FormField("quantum_safe", "Quantum-safe", kind="dropdown", choices=_TRISTATE, optional=True),
+            FormField("fips_approved", "FIPS approved", kind="dropdown", choices=_TRISTATE, optional=True),
+            # Provider-requirement filters (all optional).
+            FormField("require_fips_140", "Require FIPS 140 certified", kind="bool"),
+            FormField("min_fips_level", "Min FIPS 140 level", kind="dropdown", choices=_FIPS_LEVELS, optional=True),
+            FormField("require_memory_safe", "Require memory-safe", kind="bool"),
+            FormField("require_constant_time", "Require constant-time", kind="bool"),
+            FormField("require_side_channel_hardened", "Require side-channel hardened", kind="bool"),
+            FormField("require_no_known_cve", "Require no known CVEs", kind="bool"),
+            FormField("prefer_hardware_accelerated", "Prefer hardware acceleration", kind="bool"),
+            # Advanced escape hatch: a full ScopeSpecification / ProviderRequirements JSON wins.
             FormField(
                 "scope_spec",
-                "Scope specification (JSON, overrides scope)",
+                "Scope specification (JSON, overrides scope + filters)",
                 kind="area",
                 placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
                 optional=True,
             ),
+            FormField(
+                "provider_requirements",
+                "Provider requirements (JSON, overrides toggles)",
+                kind="area",
+                placeholder='{"fips_140_certified": true, "min_fips_level": "FIPS_140_LEVEL_3"}',
+                optional=True,
+            ),
         ),
         examples=(
-            ("demo-signing-key", "demo-signing-policy", "ecdsa-p256-sha256-der", "software", "signature", ""),
-            ("demo-encryption-key", "demo-encryption-policy", "aes-256-gcm-128-96", "software", "aead", ""),
+            (
+                "demo-signing-key",
+                "demo-signing-policy",
+                "ecdsa-p256-sha256-der",
+                "software",
+                "SIGNATURE_STANDARD",
+                None,
+                "",
+                "",
+                "",
+                "",
+                False,
+                "",
+                False,
+                False,
+                False,
+                False,
+                False,
+                "",
+                "",
+            ),
+            (
+                "demo-encryption-key",
+                "demo-encryption-policy",
+                "aes-256-gcm-128-96",
+                "software",
+                "AEAD_STANDARD",
+                None,
+                "",
+                "",
+                "",
+                "",
+                False,
+                "",
+                False,
+                False,
+                False,
+                False,
+                False,
+                "",
+                "",
+            ),
         ),
     ),
     RpcFormSpec(
@@ -191,7 +269,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 optional=True,
             ),
         ),
-        examples=(("demo-signing-key", "ml-dsa-65", False, "signature", ""),),
+        examples=(("demo-signing-key", "ml-dsa-65", False, "SIGNATURE_STANDARD", ""),),
     ),
     RpcFormSpec(
         "CryptoService",
@@ -201,14 +279,20 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
             FormField(
+                "domain_context",
+                "Domain context (base64, optional)",
+                placeholder="e.g. Ed25519ctx domain separation",
+                optional=True,
+            ),
+            FormField(
                 "scope_params",
-                "Scope parameters (JSON, optional)",
+                "Scope parameters (JSON, advanced override)",
                 kind="area",
-                placeholder='{"no_context": {}} or {"domain_context": {"context": "<base64>"}}',
+                placeholder='{"no_context": {}} or {"vendor_context": {"params": {"vendor": "acme"}}}',
                 optional=True,
             ),
         ),
-        examples=(("demo-signing-key", "Hello from Citius", ""),),
+        examples=(("demo-signing-key", "Hello from Citius", "", ""),),
         produces="Signature",
     ),
     RpcFormSpec(
@@ -221,14 +305,20 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("signature", "Signature (base64)", kind="area"),
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField(
+                "domain_context",
+                "Domain context (base64, must match sign)",
+                placeholder="e.g. Ed25519ctx domain separation",
+                optional=True,
+            ),
+            FormField(
                 "scope_params",
-                "Scope parameters (JSON, optional)",
+                "Scope parameters (JSON, advanced override)",
                 kind="area",
                 placeholder='{"no_context": {}} or {"domain_context": {"context": "<base64>"}}',
                 optional=True,
             ),
         ),
-        examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', ""),),
+        examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', "", ""),),
         consumes="Signature",
     ),
     RpcFormSpec(
@@ -239,14 +329,20 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("key_name", "Key name", placeholder="demo-encryption-key"),
             FormField("plaintext", "Plaintext", kind="area", placeholder="Sensitive demo payload"),
             FormField(
+                "aad",
+                "Additional authenticated data (base64, optional)",
+                placeholder="authenticated but not encrypted",
+                optional=True,
+            ),
+            FormField(
                 "scope_params",
-                "Scope parameters (JSON, optional)",
+                "Scope parameters (JSON, advanced override)",
                 kind="area",
                 placeholder='{"aead_params": {"aad": "<base64>"}} or {"no_params": {}}',
                 optional=True,
             ),
         ),
-        examples=(("demo-encryption-key", "Sensitive demo payload", ""),),
+        examples=(("demo-encryption-key", "Sensitive demo payload", "", ""),),
         produces="Ciphertext",
     ),
     RpcFormSpec(
@@ -258,14 +354,20 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("ciphertext", "Ciphertext (base64)", kind="area"),
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField(
+                "aad",
+                "Additional authenticated data (base64, must match encrypt)",
+                placeholder="authenticated but not encrypted",
+                optional=True,
+            ),
+            FormField(
                 "scope_params",
-                "Scope parameters (JSON, optional)",
+                "Scope parameters (JSON, advanced override)",
                 kind="area",
                 placeholder='{"aead_params": {"aad": "<base64>"}} or {"no_params": {}}',
                 optional=True,
             ),
         ),
-        examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', ""),),
+        examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "", ""),),
         consumes="Ciphertext",
     ),
     RpcFormSpec(
@@ -275,15 +377,22 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
             FormField("digest", "Digest (base64)", kind="area"),
+            FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
+            FormField(
+                "domain_context",
+                "Domain context (base64, optional)",
+                placeholder="e.g. prehash domain separation",
+                optional=True,
+            ),
             FormField(
                 "scope_params",
-                "Scope parameters (JSON, optional)",
+                "Scope parameters (JSON, advanced override)",
                 kind="area",
                 placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
                 optional=True,
             ),
         ),
-        examples=(("demo-signing-key", "<paste digest>", ""),),
+        examples=(("demo-signing-key", "<paste digest>", "", "", ""),),
         produces="Signature",
     ),
     RpcFormSpec(
@@ -295,15 +404,22 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("digest", "Digest (base64)", kind="area"),
             FormField("signature", "Signature (base64)", kind="area"),
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
+            FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
+            FormField(
+                "domain_context",
+                "Domain context (base64, must match sign)",
+                placeholder="e.g. prehash domain separation",
+                optional=True,
+            ),
             FormField(
                 "scope_params",
-                "Scope parameters (JSON, optional)",
+                "Scope parameters (JSON, advanced override)",
                 kind="area",
                 placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
                 optional=True,
             ),
         ),
-        examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', ""),),
+        examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "", "", ""),),
         consumes="Signature",
     ),
 )

@@ -199,50 +199,50 @@ def _sign_request_proto() -> object:
     return SignRequest(key_name="k", input=b"m")
 
 
-def test_apply_scope_params_defaults_to_no_context() -> None:
-    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _apply_scope_params
+def test_finalize_scope_params_defaults_to_no_context() -> None:
+    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _finalize_scope_params
 
     built = _sign_request_proto()
-    _apply_scope_params(built, {}, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
+    _finalize_scope_params(built, {}, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
     assert built.WhichOneof("scope_params") == "no_context"
 
 
-def test_apply_scope_params_selects_domain_context() -> None:
+def test_finalize_scope_params_selects_domain_context() -> None:
     import base64 as b64
 
-    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _apply_scope_params
+    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _finalize_scope_params
 
     built = _sign_request_proto()
     context = b64.b64encode(b"tenant-a").decode()
     request = {"scope_params": f'{{"domain_context": {{"context": "{context}"}}}}'}
-    _apply_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
+    _finalize_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
     assert built.WhichOneof("scope_params") == "domain_context"
     assert built.domain_context.context == b"tenant-a"
 
 
-def test_apply_scope_params_sets_aead_aad() -> None:
+def test_finalize_scope_params_sets_aead_aad() -> None:
     import base64 as b64
 
     from citius_sdk.services.crypto import EncryptRequest
 
-    from citius_ui.workbench.actions import ENCRYPTION_SCOPE_PARAM_KEYS, _apply_scope_params
+    from citius_ui.workbench.actions import ENCRYPTION_SCOPE_PARAM_KEYS, _finalize_scope_params
 
     built = EncryptRequest(key_name="k", plaintext=b"p")
     aad = b64.b64encode(b"header").decode()
     request = {"scope_params": {"aead_params": {"aad": aad}}}
-    _apply_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
+    _finalize_scope_params(built, request, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
     assert built.WhichOneof("scope_params") == "aead_params"
     assert built.aead_params.aad == b"header"
 
 
-def test_apply_scope_params_rejects_unknown_and_invalid() -> None:
+def test_finalize_scope_params_rejects_unknown_and_invalid() -> None:
     from citius_ui.grpc_client.serialization import RequestError
-    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _apply_scope_params
+    from citius_ui.workbench.actions import SIGNATURE_SCOPE_PARAM_KEYS, _finalize_scope_params
 
     built = _sign_request_proto()
 
     def apply(scope_params: object) -> None:
-        _apply_scope_params(
+        _finalize_scope_params(
             built, {"scope_params": scope_params}, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context"
         )
 
@@ -265,3 +265,121 @@ def test_key_scope_spec_accepts_full_scope_spec_json() -> None:
     assert spec.WhichOneof("scope_spec") == "signature"
     with pytest.raises(RequestError, match="must set one scope arm"):
         _key_scope_spec({"scope_spec": "{}"})
+
+
+# ── Phase B: friendly scope / security / provider / crypto-param fields ────────
+
+
+def test_key_scope_spec_accepts_full_sdk_scope_name() -> None:
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    spec = _key_scope_spec({"scope": "AEAD_STANDARD"})
+    assert spec.WhichOneof("scope_spec") == "aead"
+
+
+def test_key_scope_spec_carries_security_filters() -> None:
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    spec = _key_scope_spec(
+        {
+            "scope": "SIGNATURE_STANDARD",
+            "security_strength_bits": 128,
+            "nist_security_level": "LEVEL_3",
+            "quantum_safe": "true",
+            "nist_status": "APPROVED",
+            "fips_approved": "false",
+        }
+    )
+    security = spec.signature.security
+    assert security.security_strength_bits == 128
+    assert security.quantum_safe is True
+    assert security.fips_approved is False
+
+
+def test_security_properties_returns_none_when_unset() -> None:
+    from citius_ui.workbench.actions import _security_properties
+
+    assert _security_properties({"scope": "SIGNATURE_STANDARD"}) is None
+
+
+def test_provider_requirements_from_toggles() -> None:
+    from citius_ui.workbench.actions import _provider_requirements
+
+    reqs = _provider_requirements({"require_fips_140": True, "min_fips_level": "LEVEL_3", "require_memory_safe": True})
+    assert reqs is not None
+    proto = reqs.to_proto()
+    assert proto.fips_140_certified is True
+    assert proto.memory_safe is True
+    assert proto.min_fips_level == 3  # FIPS_140_LEVEL_3
+
+
+def test_provider_requirements_none_when_no_toggles() -> None:
+    from citius_ui.workbench.actions import _provider_requirements
+
+    assert _provider_requirements({}) is None
+
+
+def test_provider_requirements_json_override_wins() -> None:
+    from citius_ui.workbench.actions import _provider_requirements
+
+    reqs = _provider_requirements({"require_fips_140": False, "provider_requirements": {"constant_time": True}})
+    assert reqs is not None
+    proto = reqs.to_proto()
+    assert proto.constant_time is True
+
+
+def test_encryption_params_from_friendly_aad() -> None:
+    import base64 as b64
+
+    from citius_ui.workbench.actions import _encryption_params
+
+    params = _encryption_params({"aad": b64.b64encode(b"header").decode()})
+    assert params is not None
+    assert params.aad == b"header"
+    assert _encryption_params({}) is None
+
+
+def test_signature_context_from_friendly_domain_context() -> None:
+    import base64 as b64
+
+    from citius_ui.workbench.actions import _signature_context
+
+    context = _signature_context({"domain_context": b64.b64encode(b"dom").decode()})
+    assert context is not None
+    assert context.context == b"dom"
+    assert _signature_context({}) is None
+
+
+def test_hash_algorithm_from_friendly_field() -> None:
+    import citius_sdk as sdk
+
+    from citius_ui.workbench.actions import _hash_algorithm
+
+    assert _hash_algorithm({"hash_algorithm": "SHA256"}) is sdk.HashAlgorithm.SHA256
+    assert _hash_algorithm({}) is None
+
+
+def test_finalize_scope_params_override_beats_friendly_params() -> None:
+    from citius_sdk import AeadParams
+    from citius_sdk.services.crypto import encrypt_request
+
+    from citius_ui.workbench.actions import ENCRYPTION_SCOPE_PARAM_KEYS, _finalize_scope_params
+
+    # Friendly params set aead_params; an override to no_params must win.
+    built = encrypt_request("k", b"p", params=AeadParams(aad=b"friendly"))
+    _finalize_scope_params(
+        built, {"scope_params": {"no_params": {}}}, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params"
+    )
+    assert built.WhichOneof("scope_params") == "no_params"
+
+
+def test_finalize_scope_params_keeps_friendly_params_without_override() -> None:
+    from citius_sdk import AeadParams
+    from citius_sdk.services.crypto import encrypt_request
+
+    from citius_ui.workbench.actions import ENCRYPTION_SCOPE_PARAM_KEYS, _finalize_scope_params
+
+    built = encrypt_request("k", b"p", params=AeadParams(aad=b"friendly"))
+    _finalize_scope_params(built, {}, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
+    assert built.WhichOneof("scope_params") == "aead_params"
+    assert built.aead_params.aad == b"friendly"
