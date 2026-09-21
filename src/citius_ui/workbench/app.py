@@ -171,6 +171,22 @@ CSS = """
 .workbench-grid input, .workbench-grid textarea, .workbench-grid select {
     background: var(--citius-field-bg) !important; border: none !important; }
 
+/* Checkboxes must be excluded from the generic input rule above: giving them
+   the field background makes them invisible (white-on-white in light mode)
+   and "border: none" removes their box. Restore a real, clickable control
+   with an accent tick, and make sure nothing overlays it. */
+.workbench-grid input[type="checkbox"] {
+    -webkit-appearance: checkbox !important; appearance: checkbox !important;
+    width: 18px !important; height: 18px !important; min-width: 18px !important;
+    accent-color: var(--citius-accent-purple) !important;
+    background: var(--citius-field-bg) !important;
+    border: 1px solid var(--citius-border-idle) !important; border-radius: 4px !important;
+    cursor: pointer !important; pointer-events: auto !important; opacity: 1 !important;
+    position: static !important; margin: 0 8px 0 0 !important; }
+.workbench-grid label:has(> input[type="checkbox"]),
+.workbench-grid .checkbox-container { cursor: pointer !important; pointer-events: auto !important; }
+
+
 /* The Response code block's syntax highlighting is a fixed dark theme
    (unrelated to the page's own light/dark toggle), so its token colors are
    only readable against a dark background. Force that background rather
@@ -277,7 +293,11 @@ def _render_response(
 
 
 def _render_input(spec: FormField) -> gr.components.Component:
-    label = f"{spec.label} (optional)" if spec.optional else spec.label
+    # Only append "(optional)" when the label does not already convey it, and
+    # never for checkboxes (an unchecked box already reads as "not set").
+    label = spec.label
+    if spec.optional and spec.kind != "bool" and "optional" not in spec.label.lower():
+        label = f"{spec.label} (optional)"
     if spec.kind == "area":
         return gr.Textbox(label=label, placeholder=spec.placeholder, lines=6, max_lines=24)
     if spec.kind == "number":

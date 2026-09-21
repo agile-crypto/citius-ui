@@ -303,6 +303,29 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "",
                 "",
             ),
+            # Exercises the filter sections: a quantum-safe, NIST-approved
+            # signing key that must run on a FIPS 140 L3, memory-safe provider.
+            (
+                "demo-pqc-signing-key",
+                "demo-signing-policy",
+                "ml-dsa-65",
+                "software",
+                "SIGNATURE_STANDARD",
+                192,
+                "LEVEL_3",
+                "APPROVED",
+                "true",
+                "true",
+                True,
+                "LEVEL_3",
+                True,
+                False,
+                False,
+                True,
+                False,
+                "",
+                "",
+            ),
         ),
     ),
     RpcFormSpec(
@@ -349,7 +372,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
             FormField(
                 "domain_context",
-                "Domain context (base64, optional)",
+                "Domain context (base64)",
                 placeholder="e.g. Ed25519ctx domain separation",
                 optional=True,
             ),
@@ -362,7 +385,11 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-signing-key", "Hello from Citius", "", ""),),
+        examples=(
+            ("demo-signing-key", "Hello from Citius", "", ""),
+            # Domain-separated signature: "citius-demo" as base64.
+            ("demo-signing-key", "Hello from Citius", "Y2l0aXVzLWRlbW8=", ""),
+        ),
         produces="Signature",
     ),
     RpcFormSpec(
@@ -389,7 +416,17 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', "", ""),),
+        examples=(
+            ("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', "", ""),
+            (
+                "demo-signing-key",
+                "Hello from Citius",
+                "<paste signature>",
+                '{"key_version": 1}',
+                "Y2l0aXVzLWRlbW8=",
+                "",
+            ),
+        ),
         consumes="Signature",
     ),
     RpcFormSpec(
@@ -401,7 +438,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("plaintext", "Plaintext", kind="area", placeholder="Sensitive demo payload"),
             FormField(
                 "aad",
-                "Additional authenticated data (base64, optional)",
+                "Additional authenticated data (base64)",
                 placeholder="authenticated but not encrypted",
                 optional=True,
             ),
@@ -414,7 +451,11 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-encryption-key", "Sensitive demo payload", "", ""),),
+        examples=(
+            ("demo-encryption-key", "Sensitive demo payload", "", ""),
+            # AEAD with additional authenticated data: "context-v1" as base64.
+            ("demo-encryption-key", "Sensitive demo payload", "Y29udGV4dC12MQ==", ""),
+        ),
         produces="Ciphertext",
     ),
     RpcFormSpec(
@@ -440,7 +481,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "", ""),),
+        examples=(
+            ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "", ""),
+            ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "Y29udGV4dC12MQ==", ""),
+        ),
         consumes="Ciphertext",
     ),
     RpcFormSpec(
@@ -453,7 +497,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
                 "domain_context",
-                "Domain context (base64, optional)",
+                "Domain context (base64)",
                 placeholder="e.g. prehash domain separation",
                 optional=True,
             ),
@@ -466,7 +510,11 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-signing-key", "<paste digest>", "", "", ""),),
+        examples=(
+            ("demo-signing-key", "<paste digest>", "", "", ""),
+            # Declare the hash that produced the digest.
+            ("demo-signing-key", "<paste digest>", "SHA256", "", ""),
+        ),
         produces="Signature",
     ),
     RpcFormSpec(
@@ -494,7 +542,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "", "", ""),),
+        examples=(
+            ("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "", "", ""),
+            ("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "SHA256", "", ""),
+        ),
         consumes="Signature",
     ),
 )
