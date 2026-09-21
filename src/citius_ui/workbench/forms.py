@@ -17,7 +17,12 @@ import citius_sdk as _sdk
 
 @dataclass(frozen=True, slots=True)
 class FormField:
-    """One request field rendered as an individual control."""
+    """One request field rendered as an individual control.
+
+    ``group`` places the field inside a collapsible section (added on demand)
+    rather than the always-visible core of the form; an empty group means the
+    field is a core field shown up front.
+    """
 
     key: str
     label: str
@@ -25,6 +30,7 @@ class FormField:
     placeholder: str = ""
     choices: tuple[str, ...] = ()
     optional: bool = False
+    group: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +45,31 @@ class RpcFormSpec:
     produces: str = ""  # "" | Signature | Ciphertext
     consumes: str = ""  # "" | Signature | Ciphertext: accepts a pasted producer bundle
     advanced_hint: str = ""
+
+    def core_fields(self) -> tuple[FormField, ...]:
+        """Fields shown up front (no group), in declaration order."""
+        return tuple(field for field in self.fields if not field.group)
+
+    def grouped_fields(self) -> tuple[tuple[str, tuple[FormField, ...]], ...]:
+        """Optional filter sections as ``(group_name, fields)`` in first-seen order."""
+        order: list[str] = []
+        by_group: dict[str, list[FormField]] = {}
+        for field in self.fields:
+            if not field.group:
+                continue
+            if field.group not in by_group:
+                by_group[field.group] = []
+                order.append(field.group)
+            by_group[field.group].append(field)
+        return tuple((name, tuple(by_group[name])) for name in order)
+
+
+# Collapsible filter-section names for the key-creation form, aligned with the
+# API: UniversalSecurityProperties, per-scope primitive properties, and
+# ProviderRequirements. An advanced section exposes the raw JSON escape hatches.
+GROUP_UNIVERSAL = "Universal security properties"
+GROUP_PROVIDER = "Provider requirements"
+GROUP_ADVANCED = "Advanced — raw JSON overrides"
 
 
 _POLICY_FORMATS = ("json", "rego", "cedar", "yaml")
@@ -160,21 +191,57 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 optional=True,
             ),
             # Security-property filters (all optional; blank = leave unset).
-            FormField("security_strength_bits", "Min security strength (bits)", kind="number", optional=True),
             FormField(
-                "nist_security_level", "NIST security level", kind="dropdown", choices=_NIST_LEVELS, optional=True
+                "security_strength_bits",
+                "Min security strength (bits)",
+                kind="number",
+                optional=True,
+                group=GROUP_UNIVERSAL,
             ),
-            FormField("nist_status", "NIST status", kind="dropdown", choices=_NIST_STATUSES, optional=True),
-            FormField("quantum_safe", "Quantum-safe", kind="dropdown", choices=_TRISTATE, optional=True),
-            FormField("fips_approved", "FIPS approved", kind="dropdown", choices=_TRISTATE, optional=True),
+            FormField(
+                "nist_security_level",
+                "NIST security level",
+                kind="dropdown",
+                choices=_NIST_LEVELS,
+                optional=True,
+                group=GROUP_UNIVERSAL,
+            ),
+            FormField(
+                "nist_status",
+                "NIST status",
+                kind="dropdown",
+                choices=_NIST_STATUSES,
+                optional=True,
+                group=GROUP_UNIVERSAL,
+            ),
+            FormField(
+                "quantum_safe", "Quantum-safe", kind="dropdown", choices=_TRISTATE, optional=True, group=GROUP_UNIVERSAL
+            ),
+            FormField(
+                "fips_approved",
+                "FIPS approved",
+                kind="dropdown",
+                choices=_TRISTATE,
+                optional=True,
+                group=GROUP_UNIVERSAL,
+            ),
             # Provider-requirement filters (all optional).
-            FormField("require_fips_140", "Require FIPS 140 certified", kind="bool"),
-            FormField("min_fips_level", "Min FIPS 140 level", kind="dropdown", choices=_FIPS_LEVELS, optional=True),
-            FormField("require_memory_safe", "Require memory-safe", kind="bool"),
-            FormField("require_constant_time", "Require constant-time", kind="bool"),
-            FormField("require_side_channel_hardened", "Require side-channel hardened", kind="bool"),
-            FormField("require_no_known_cve", "Require no known CVEs", kind="bool"),
-            FormField("prefer_hardware_accelerated", "Prefer hardware acceleration", kind="bool"),
+            FormField("require_fips_140", "Require FIPS 140 certified", kind="bool", group=GROUP_PROVIDER),
+            FormField(
+                "min_fips_level",
+                "Min FIPS 140 level",
+                kind="dropdown",
+                choices=_FIPS_LEVELS,
+                optional=True,
+                group=GROUP_PROVIDER,
+            ),
+            FormField("require_memory_safe", "Require memory-safe", kind="bool", group=GROUP_PROVIDER),
+            FormField("require_constant_time", "Require constant-time", kind="bool", group=GROUP_PROVIDER),
+            FormField(
+                "require_side_channel_hardened", "Require side-channel hardened", kind="bool", group=GROUP_PROVIDER
+            ),
+            FormField("require_no_known_cve", "Require no known CVEs", kind="bool", group=GROUP_PROVIDER),
+            FormField("prefer_hardware_accelerated", "Prefer hardware acceleration", kind="bool", group=GROUP_PROVIDER),
             # Advanced escape hatch: a full ScopeSpecification / ProviderRequirements JSON wins.
             FormField(
                 "scope_spec",
@@ -182,6 +249,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
             FormField(
                 "provider_requirements",
@@ -189,6 +257,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"fips_140_certified": true, "min_fips_level": "FIPS_140_LEVEL_3"}',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(
@@ -290,6 +359,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"no_context": {}} or {"vendor_context": {"params": {"vendor": "acme"}}}',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(("demo-signing-key", "Hello from Citius", "", ""),),
@@ -316,6 +386,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"no_context": {}} or {"domain_context": {"context": "<base64>"}}',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', "", ""),),
@@ -340,6 +411,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"aead_params": {"aad": "<base64>"}} or {"no_params": {}}',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(("demo-encryption-key", "Sensitive demo payload", "", ""),),
@@ -365,6 +437,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"aead_params": {"aad": "<base64>"}} or {"no_params": {}}',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "", ""),),
@@ -390,6 +463,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(("demo-signing-key", "<paste digest>", "", "", ""),),
@@ -417,6 +491,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="area",
                 placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
                 optional=True,
+                group=GROUP_ADVANCED,
             ),
         ),
         examples=(("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "", "", ""),),

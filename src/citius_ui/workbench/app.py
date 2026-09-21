@@ -1,14 +1,17 @@
 """Service-organized Gradio Workbench wired to the SDK-backed actions.
 
-Services are light parent accordions; each implemented RPC is a nested child
-accordion with per-field forms aligned to api/proto, clickable examples, an
-inline output panel, and, for producer RPCs, an inline history table with a
-real per-RPC "Clear history" (removes those records from the session's
-history store, not just the display) and a copyable JSON bundle of the latest
-response. Consumer RPCs (Verify, Decrypt, DigestVerify) accept that bundle
-pasted back in and fill their fields from it. Every execution funnels through
-the shared ActionExecutor so results are redacted and recorded in the
-session's history. Contract-only RPCs are listed honestly as unavailable.
+Services render as flat cards in a responsive grid (no nested accordions): a
+single accordion per service holds a method dropdown, the selected method's
+fields, and Execute/Clear, with per-field forms aligned to api/proto,
+clickable examples, an inline output panel, and, for producer RPCs, an inline
+history table with a real per-RPC "Clear history" (removes those records from
+the session's history store, not just the display) and a copyable JSON bundle
+of the latest response. Consumer RPCs (Verify, Decrypt, DigestVerify) accept
+that bundle pasted back in and fill their fields from it. Every execution
+funnels through the shared ActionExecutor so results are redacted and
+recorded in the session's history. Services with no implemented RPCs render
+as a muted, still-expandable card listing their contract methods honestly as
+unavailable.
 """
 
 from __future__ import annotations
@@ -47,6 +50,36 @@ _CONSUMER_HINT = {
     "Encrypt": "Decrypt",
 }
 
+# Service -> accent class, for the services with at least one implemented RPC
+# (the rest render as an unaccented, muted card).
+_ACCENT_BY_SERVICE: dict[str, str] = {
+    "CryptoPolicyService": "accent-purple",
+    "KeyManagementService": "accent-teal",
+    "CryptoService": "accent-coral",
+}
+
+_SPAN_TWO_LABEL = "⇔ Span two columns"
+_SPAN_ONE_LABEL = "⇔ Single column"
+
+_TOGGLE_THEME_JS = "() => { document.body.classList.toggle('dark'); }"
+
+
+def _span_toggle_js(button_elem_id: str) -> str:
+    """Client-side toggle: flip one card between one and two grid columns.
+
+    Pure DOM manipulation (no server round-trip) -- grid-column is a normal
+    CSS Grid property, so this plays correctly with the auto-fit column-count
+    math instead of fighting it the way a free-drag pixel-width resize handle
+    would.
+    """
+    return f"""() => {{
+  const btn = document.getElementById('{button_elem_id}');
+  const card = btn.closest('.svc-card');
+  card.classList.toggle('span-2');
+  btn.textContent = card.classList.contains('span-2') ? '{_SPAN_ONE_LABEL}' : '{_SPAN_TWO_LABEL}';
+}}"""
+
+
 # Light values live on :root and dark overrides on `:root .dark`, mirroring how
 # Gradio scopes its own theme variables, so both flip together whether the mode
 # comes from the OS preference or a forced ?__theme= query parameter.
@@ -59,6 +92,9 @@ CSS = """
   --citius-border: #e6ebf7; --citius-border-idle: #d6ddf0; --citius-ring: #e0e7f8;
   --citius-note-bg: #f4faf4; --citius-note-border: #7aa37a; --citius-note-ink: #37533a;
   --citius-shadow: rgba(120, 140, 200, .18); --citius-shadow-soft: rgba(120, 140, 200, .16);
+  --citius-zone-bg: #e3e9f8; --citius-zone-border: #e2e4ea; --citius-field-bg: #ffffff;
+  --citius-muted-bg: #f0f1f4; --citius-muted-ink: #9599a6;
+  --citius-accent-purple: #7f77dd; --citius-accent-teal: #1d9e75; --citius-accent-coral: #d85a30;
 }
 :root .dark {
   --citius-ink: #cdd7f5; --citius-ink-soft: #93a1cc;
@@ -68,34 +104,127 @@ CSS = """
   --citius-border: #2e3a5c; --citius-border-idle: #3a4666; --citius-ring: #34406a;
   --citius-note-bg: #17251b; --citius-note-border: #5d8c62; --citius-note-ink: #a9c9ac;
   --citius-shadow: rgba(0, 0, 0, .35); --citius-shadow-soft: rgba(0, 0, 0, .30);
+  --citius-zone-bg: #12162a; --citius-zone-border: #2a2e3a; --citius-field-bg: #262b38;
+  --citius-muted-bg: #181c2c; --citius-muted-ink: #666c7d;
+  --citius-accent-purple: #9a92e8; --citius-accent-teal: #3fceA0; --citius-accent-coral: #ef8a63;
 }
 .title-container { text-align: center; margin: 8px 0 18px; padding: 26px;
                    background: linear-gradient(135deg, var(--citius-banner-start), var(--citius-banner-end));
-                   border-radius: 14px; box-shadow: 0 4px 16px var(--citius-shadow); }
+                   border-radius: 14px; box-shadow: 0 4px 16px var(--citius-shadow); height: 100%; }
 .title-container h1 { color: var(--citius-ink); font-size: 2.1rem; margin: 0 0 8px; }
 .title-container p { color: var(--citius-ink-soft); margin: 0; }
+.theme-toggle { border-radius: 999px !important; max-width: 46px !important; min-width: 46px !important; }
 .identity-note { border-left: 4px solid var(--citius-note-border); background: var(--citius-note-bg);
                  padding: 10px 14px; border-radius: 0 8px 8px 0; color: var(--citius-note-ink); }
-.service-accordion { border: 0 !important; margin: 8px 0 !important; }
-.service-accordion > button, .service-accordion > .label-wrap {
-    background: var(--citius-header-bg) !important; color: var(--citius-header-ink) !important;
-    font-size: 1.05rem !important; font-weight: 700 !important;
-    border-radius: 10px !important; padding: 12px 16px !important;
-    box-shadow: 0 2px 8px var(--citius-shadow-soft) !important; }
-.service-accordion > button span, .service-accordion > .label-wrap span {
-    color: var(--citius-header-ink) !important; }
 .service-body { gap: 6px !important; padding: 6px 4px 2px !important; }
-.workbench-column { gap: 8px !important; }
 .rpc-accordion { margin: 5px 0 !important;
                  border: 1px solid var(--citius-border) !important;
                  border-left: 4px solid var(--citius-border-idle) !important;
                  border-radius: 8px !important; background: var(--citius-surface) !important; }
 .rpc-accordion > button, .rpc-accordion > .label-wrap {
     font-weight: 600 !important; color: var(--citius-rpc-ink) !important; padding: 9px 13px !important; }
-.rpc-accordion.rpc-open { border-left: 4px solid var(--citius-accent) !important;
-                          background: var(--citius-surface-open) !important;
-                          box-shadow: inset 0 0 0 1px var(--citius-ring) !important; }
 .logout-button { max-width: 140px; align-self: flex-end; }
+
+/* Method, Request, Examples, and Output each sit in their own bordered,
+   tinted zone so the four read as clearly separate regions within a service
+   card. gr.Column carries a "column" class (not "block"), so .method-zone/
+   .request-zone alone are specific enough and never compete with the
+   ".svc-card .block" background-stripping rule below; gr.Accordion
+   (.examples-zone/.output-zone) IS a "block", so that rule needs the
+   compound ".block.examples-zone" / ".block.output-zone" selector to win
+   instead. */
+.svc-card .method-zone, .svc-card .request-zone {
+    border: 0.5px solid var(--citius-zone-border) !important; border-radius: 10px !important;
+    background: var(--citius-zone-bg) !important; padding: 10px 12px !important; margin: 2px 0 8px !important; }
+.svc-card .block.examples-zone, .svc-card .block.output-zone {
+    border: 0.5px solid var(--citius-zone-border) !important; border-radius: 10px !important;
+    background: var(--citius-zone-bg) !important; margin: 2px 0 8px !important; box-shadow: none !important; }
+.svc-card .examples-zone > button, .svc-card .examples-zone > .label-wrap,
+.svc-card .output-zone > button, .svc-card .output-zone > .label-wrap {
+    background: transparent !important; color: var(--citius-ink-soft) !important; box-shadow: none !important; }
+
+/* Gradio wraps every field in its own bordered/backgrounded ".block", and
+   groups consecutive fields into a backgrounded ".form" container. Strip both
+   inside a service card so labels sit directly on the zone/card background;
+   the input/textarea/select elements below keep their own field background. */
+.svc-card .block, .svc-card .form {
+    background: transparent !important; border: none !important; box-shadow: none !important; }
+
+/* The "Paste a bundle" accordion is a .block too, so the strip rule above
+   would otherwise flatten it -- restore its usual surface/border look so it
+   still reads as a distinct nested section, matching non-card instances of
+   the same class ("View granted permissions", the runbooks list). */
+.svc-card .block.rpc-accordion {
+    border: 1px solid var(--citius-border) !important;
+    border-left: 4px solid var(--citius-border-idle) !important;
+    background: var(--citius-surface) !important; }
+
+/* Dropdown nests its listbox input inside two ".wrap" divs: an outer one
+   (".wrap.default.full") that Gradio gives its own default gray background,
+   and an inner one around the actual input. Both get the plain field
+   background with no border of their own -- the field only needs to read as
+   a lighter cutout against the zone's background, not another bordered box
+   stacked inside the zone's own border. */
+.svc-card .wrap.default.full, .svc-card .wrap:has(input[role="listbox"]) {
+    background: var(--citius-field-bg) !important; border: none !important; }
+
+.workbench-grid input, .workbench-grid textarea, .workbench-grid select {
+    background: var(--citius-field-bg) !important; border: none !important; }
+
+/* The Response code block's syntax highlighting is a fixed dark theme
+   (unrelated to the page's own light/dark toggle), so its token colors are
+   only readable against a dark background. Force that background rather
+   than the page theme's, so the two can never end up light-on-light. */
+.output-zone .cm-editor { background: #1e1e1e !important; border-radius: 6px !important; }
+
+/* Services render as flat cards in a responsive grid capped at two columns
+   (auto-fit picks 1 vs 2 tracks from the viewport; a card can opt into
+   spanning both via the "Span" toggle below its method dropdown). */
+.workbench-grid { display: grid !important; align-items: start !important;
+    grid-template-columns: repeat(auto-fit, minmax(max(280px, calc(50% - 7px)), 1fr)) !important;
+    gap: 14px !important; }
+.workbench-grid > .form { min-width: 0 !important; }
+.svc-card.span-2 { grid-column: 1 / -1 !important; }
+.span-toggle-btn { font-size: .78rem !important; padding: 3px 12px !important; border-radius: 999px !important;
+    background: transparent !important; border: 1px solid var(--citius-border) !important;
+    color: var(--citius-ink-soft) !important; width: fit-content !important; min-width: 0 !important;
+    margin: 0 0 8px !important; box-shadow: none !important; }
+
+.svc-card { border-radius: 12px !important; border: 1px solid var(--citius-border) !important;
+    box-shadow: 0 2px 8px var(--citius-shadow-soft) !important; background: var(--citius-surface) !important;
+    border-left-width: 3px !important; border-left-style: solid !important;
+    border-left-color: var(--citius-border-idle) !important; padding: 0 !important; margin: 0 !important; }
+.svc-card > button, .svc-card > .label-wrap {
+    background: var(--citius-header-bg) !important; color: var(--citius-header-ink) !important;
+    font-size: 1.05rem !important; font-weight: 700 !important; letter-spacing: .15px !important;
+    border-radius: 12px 12px 0 0 !important; box-shadow: none !important; padding: 10px 14px !important; }
+.svc-card > button span, .svc-card > .label-wrap span { color: var(--citius-header-ink) !important; }
+.svc-card > div:last-child { padding: 8px 14px 12px !important; }
+.accent-purple { border-left-color: var(--citius-accent-purple) !important; }
+.accent-teal { border-left-color: var(--citius-accent-teal) !important; }
+.accent-coral { border-left-color: var(--citius-accent-coral) !important; }
+
+/* Muted variant is still a real .svc-card accordion (expandable to show its
+   contract RPCs), just recolored so it reads as "not yet available" rather
+   than a runnable service. */
+.svc-card.svc-muted { background: var(--citius-muted-bg) !important; border-left-color: transparent !important; }
+.svc-card.svc-muted > button, .svc-card.svc-muted > .label-wrap {
+    background: var(--citius-muted-bg) !important; color: var(--citius-muted-ink) !important;
+    font-weight: 600 !important; }
+.svc-card.svc-muted .prose, .svc-card.svc-muted li {
+    color: var(--citius-muted-ink) !important; font-size: .85rem !important; }
+.svc-card.svc-muted > div:last-child { padding: 2px 14px 12px !important; }
+
+/* The rest of a partially-implemented service's contract methods, nested
+   inside its card. Deliberately quieter than the card itself (no border/
+   shadow, smaller text) so it reads as a footnote, not another card. */
+.pending-methods { border: none !important; background: transparent !important; box-shadow: none !important;
+    margin-top: 4px !important; }
+.pending-methods > button, .pending-methods > .label-wrap {
+    background: transparent !important; color: var(--citius-ink-soft) !important;
+    font-size: .8rem !important; font-weight: 400 !important; padding: 4px 0 !important; box-shadow: none !important; }
+.pending-methods .prose, .pending-methods li { color: var(--citius-ink-soft) !important; font-size: .8rem !important; }
+
 footer { visibility: hidden; }
 """
 
@@ -124,12 +253,6 @@ def _ordered_services(grouped: dict[str, list[tuple[str, Availability]]]) -> lis
     known = [service for service in SERVICE_ORDER if service in grouped]
     extra = [service for service in grouped if service not in SERVICE_ORDER]
     return known + extra
-
-
-def _split_columns(services: list[str]) -> tuple[list[str], list[str]]:
-    """Split services into two balanced columns to reduce vertical spread."""
-    midpoint = (len(services) + 1) // 2
-    return services[:midpoint], services[midpoint:]
 
 
 def _forms_for(service: str) -> list[RpcFormSpec]:
@@ -311,9 +434,28 @@ def build_workbench(
                 )
         return rows
 
-    def _render_rpc(spec: RpcFormSpec) -> None:
-        with gr.Accordion(spec.method, open=False, elem_classes=["rpc-accordion"]) as accordion:
-            inputs = [_render_input(field) for field in spec.fields]
+    def _render_rpc_body(spec: RpcFormSpec, *, visible: bool) -> gr.Column:
+        """Render one method's fields, actions, and output, toggled by the method dropdown."""
+        with gr.Column(visible=visible) as body:
+            # Core fields render up front; optional filter groups are collapsed
+            # into on-demand sections so the form is not overloaded. The flat
+            # ``inputs`` list stays in ``spec.fields`` order for build_request,
+            # examples, run/clear/fill wiring regardless of render order.
+            components: dict[str, gr.components.Component] = {}
+            with gr.Column(elem_classes=["request-zone"]):
+                for field in spec.core_fields():
+                    components[field.key] = _render_input(field)
+                for group_name, group_fields in spec.grouped_fields():
+                    with gr.Accordion(group_name, open=False, elem_classes=["rpc-accordion", "filter-group"]):
+                        group_inputs = [_render_input(field) for field in group_fields]
+                        for field, component in zip(group_fields, group_inputs, strict=True):
+                            components[field.key] = component
+                        clear_group = gr.Button("Clear this section", variant="secondary", size="sm")
+                        clear_group.click(
+                            lambda inputs=group_inputs: [None for _ in inputs],
+                            outputs=group_inputs,
+                        )
+            inputs = [components[field.key] for field in spec.fields]
 
             if spec.consumes:
                 with gr.Accordion(f"Paste a {spec.consumes} bundle", open=False, elem_classes=["rpc-accordion"]):
@@ -336,7 +478,7 @@ def build_workbench(
             with gr.Row():
                 run = gr.Button(spec.action_label, variant="primary")
                 clear = gr.Button("Clear", variant="secondary")
-            with gr.Accordion("Output", open=True, visible=False) as output_row:
+            with gr.Accordion("Output", open=True, visible=False, elem_classes=["output-zone"]) as output_row:
                 status_box = gr.Textbox(label="Status", interactive=False)
                 response_box = gr.Code(language="json", label="Response", interactive=False)
                 history_table = None
@@ -361,7 +503,7 @@ def build_workbench(
                     )
                     clear_history = gr.Button("Clear history", variant="secondary", size="sm")
             if spec.examples:
-                with gr.Accordion("Examples", open=True):
+                with gr.Accordion("Examples", open=True, elem_classes=["examples-zone"]):
                     gr.Examples(examples=[list(example) for example in spec.examples], inputs=inputs)
 
             outputs = [
@@ -381,15 +523,59 @@ def build_workbench(
                     _clear_producer_history(spec.method),
                     outputs=[history_table, latest_bundle],
                 )
+        return body
 
-            def _mark_open() -> dict[str, object]:
-                return gr.update(elem_classes=["rpc-accordion", "rpc-open"])
+    def _render_service_card(service: str, *, open_by_default: bool) -> None:
+        forms = _forms_for(service)
+        label = SERVICE_LABELS.get(service, service)
+        accent = _ACCENT_BY_SERVICE.get(service)
+        card_classes = ["svc-card", accent] if accent else ["svc-card"]
+        with gr.Accordion(f"{label} · {service}", open=open_by_default, elem_classes=card_classes):
+            span_toggle_id = f"span-toggle-{service}"
+            span_toggle = gr.Button(_SPAN_TWO_LABEL, elem_id=span_toggle_id, elem_classes=["span-toggle-btn"])
+            span_toggle.click(None, js=_span_toggle_js(span_toggle_id))
+            with gr.Column(elem_classes=["method-zone"]):
+                method = gr.Dropdown(choices=[form.method for form in forms], value=forms[0].method, label="Method")
+            bodies = [_render_rpc_body(form, visible=(index == 0)) for index, form in enumerate(forms)]
+            method.change(
+                lambda selected, _forms=forms: [gr.update(visible=(f.method == selected)) for f in _forms],
+                inputs=method,
+                outputs=bodies,
+            )
 
-            def _mark_closed() -> dict[str, object]:
-                return gr.update(elem_classes=["rpc-accordion"])
+            # A service can be partially implemented (e.g. Key Management has
+            # CreateKey/ReadKey/TransformKey but not ListKeys/DeleteKey/...);
+            # list the rest here so the full contract stays visible, not just
+            # the subset with a form.
+            implemented = {form.method for form in forms}
+            pending = [
+                (method_name, availability_state)
+                for method_name, availability_state in grouped.get(service, [])
+                if method_name not in implemented
+            ]
+            if pending:
+                with gr.Accordion(
+                    f"{len(pending)} more not yet available", open=False, elem_classes=["pending-methods"]
+                ):
+                    gr.Markdown(
+                        "\n".join(f"- `{method_name}` — {_AVAILABILITY_BADGE[avail]}" for method_name, avail in pending)
+                    )
 
-            accordion.expand(_mark_open, outputs=accordion)
-            accordion.collapse(_mark_closed, outputs=accordion)
+    def _render_unavailable_card(service: str) -> None:
+        """Render a muted, still-expandable card listing a service's contract RPCs.
+
+        None of these methods are implemented by the server yet, but the
+        contract already defines them, so they stay visible rather than
+        disappearing.
+        """
+        label = SERVICE_LABELS.get(service, service)
+        with gr.Accordion(f"{label} · {service}", open=False, elem_classes=["svc-card", "svc-muted"]):
+            gr.Markdown(
+                "\n".join(
+                    f"- `{method}` — {_AVAILABILITY_BADGE[availability_state]}"
+                    for method, availability_state in grouped.get(service, [])
+                )
+            )
 
     with gr.Blocks(
         title="Citius API Workbench",
@@ -397,12 +583,17 @@ def build_workbench(
         css=CSS,
         fill_width=True,
     ) as blocks:
-        gr.HTML(
-            "<div class='title-container'><h1>Citius API Workbench</h1>"
-            "<p>Open a service, then open an RPC to edit its fields and run it. "
-            "Every call is recorded in this session's history.</p></div>",
-            padding=False,
-        )
+        with gr.Row():
+            with gr.Column(scale=10):
+                gr.HTML(
+                    "<div class='title-container'><h1>Citius API Workbench</h1>"
+                    "<p>Open a service, then open an RPC to edit its fields and run it. "
+                    "Every call is recorded in this session's history.</p></div>",
+                    padding=False,
+                )
+            with gr.Column(scale=1, min_width=50):
+                theme_toggle = gr.Button("◐", elem_classes=["theme-toggle"])
+                theme_toggle.click(None, js=_TOGGLE_THEME_JS)
         identity_banner = gr.Markdown("Loading identity…", elem_classes="identity-note")
         with gr.Row():
             with gr.Accordion("View granted permissions", open=False, elem_classes=["rpc-accordion"]):
@@ -416,28 +607,12 @@ def build_workbench(
 
         with gr.Tabs():
             with gr.Tab("API Workbench"):
-                with gr.Row(equal_height=False):
-                    for column_services in _split_columns(_ordered_services(grouped)):
-                        with gr.Column(scale=1, min_width=360, elem_classes=["workbench-column"]):
-                            for service in column_services:
-                                label = SERVICE_LABELS.get(service, service)
-                                with gr.Accordion(
-                                    f"{label} · {service}", open=False, elem_classes=["service-accordion"]
-                                ):
-                                    with gr.Column(elem_classes=["service-body"]):
-                                        implemented = {form.method for form in _forms_for(service)}
-                                        for form in _forms_for(service):
-                                            _render_rpc(form)
-                                        unavailable = [
-                                            f"`{method}` — {_AVAILABILITY_BADGE[availability_state]}"
-                                            for method, availability_state in grouped.get(service, [])
-                                            if method not in implemented
-                                        ]
-                                        if unavailable:
-                                            with gr.Accordion(
-                                                "Not yet available", open=False, elem_classes=["rpc-accordion"]
-                                            ):
-                                                gr.Markdown("\n".join(f"- {row}" for row in unavailable))
+                with gr.Column(elem_classes=["workbench-grid"]):
+                    for service in _ordered_services(grouped):
+                        if _forms_for(service):
+                            _render_service_card(service, open_by_default=False)
+                        else:
+                            _render_unavailable_card(service)
 
             with gr.Tab("Demo runbooks"):
                 with gr.Column(elem_classes=["service-body"]):

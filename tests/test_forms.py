@@ -80,3 +80,50 @@ def test_digest_forms_expose_hash_algorithm() -> None:
     for method in ("DigestSign", "DigestVerify"):
         spec = FORMS_BY_METHOD[("CryptoService", method)]
         assert "hash_algorithm" in {field.key for field in spec.fields}
+
+
+def test_create_key_groups_filters_into_intuitive_sections() -> None:
+    from citius_ui.workbench.forms import GROUP_ADVANCED, GROUP_PROVIDER, GROUP_UNIVERSAL
+
+    spec = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
+    # Core fields stay ungrouped and up front.
+    core = {field.key for field in spec.core_fields()}
+    assert core == {"name", "policy", "template_id", "provider_id", "scope"}
+    groups = dict(spec.grouped_fields())
+    assert {group for group, _ in spec.grouped_fields()} == {GROUP_UNIVERSAL, GROUP_PROVIDER, GROUP_ADVANCED}
+    assert {f.key for f in groups[GROUP_UNIVERSAL]} == {
+        "security_strength_bits",
+        "nist_security_level",
+        "nist_status",
+        "quantum_safe",
+        "fips_approved",
+    }
+    assert {f.key for f in groups[GROUP_PROVIDER]} == {
+        "require_fips_140",
+        "min_fips_level",
+        "require_memory_safe",
+        "require_constant_time",
+        "require_side_channel_hardened",
+        "require_no_known_cve",
+        "prefer_hardware_accelerated",
+    }
+    assert {f.key for f in groups[GROUP_ADVANCED]} == {"scope_spec", "provider_requirements"}
+
+
+def test_grouped_fields_preserve_full_field_set_and_order() -> None:
+    # Every field is either core or grouped exactly once, and concatenating
+    # core + grouped covers all fields (order within each is preserved).
+    for spec in FORMS_BY_METHOD.values():
+        grouped = [field for _, fields in spec.grouped_fields() for field in fields]
+        combined = {field.key for field in spec.core_fields()} | {field.key for field in grouped}
+        assert combined == {field.key for field in spec.fields}
+        assert len(spec.core_fields()) + len(grouped) == len(spec.fields)
+
+
+def test_crypto_scope_params_are_grouped_as_advanced() -> None:
+    from citius_ui.workbench.forms import GROUP_ADVANCED
+
+    for method in ("Sign", "Verify", "Encrypt", "Decrypt", "DigestSign", "DigestVerify"):
+        spec = FORMS_BY_METHOD[("CryptoService", method)]
+        scope_params = next(field for field in spec.fields if field.key == "scope_params")
+        assert scope_params.group == GROUP_ADVANCED
