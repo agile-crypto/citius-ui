@@ -22,7 +22,7 @@ from citius_sdk.errors import CitiusError
 from citius_sdk.services import crypto as sdk_crypto
 from citius_sdk.services import crypto_policy as sdk_policy
 from citius_sdk.services import key_management as sdk_keys
-from google.protobuf.json_format import ParseDict, ParseError
+from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 
 from citius_ui.actions.artifacts import Artifact, ArtifactKind
 from citius_ui.actions.model import Availability, ResultStatus, RpcAction, RpcResult
@@ -130,6 +130,22 @@ def _as_bytes(value: Any) -> bytes:
     if isinstance(value, bytes):
         return value
     return str(value).encode("utf-8")
+
+
+def _full_response(message: Any) -> dict[str, Any]:
+    """Render a full response proto as a dict, preserving every populated field.
+
+    Uses proto field names (not camelCase) and includes fields left at their
+    default so the Response panel shows the complete server reply rather than a
+    hand-picked subset. Bytes fields are base64-encoded by MessageToDict, which
+    is the faithful JSON representation of protobuf ``bytes``.
+    """
+    rendered: dict[str, Any] = MessageToDict(
+        message,
+        preserving_proto_field_name=True,
+        always_print_fields_with_no_presence=True,
+    )
+    return rendered
 
 
 def _require(request: dict[str, Any], key: str) -> Any:
@@ -511,7 +527,11 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
         metadata = result.metadata.to_dict() if result.metadata else {}
         return RpcResult(
             status=ResultStatus.OK,
-            response={"ciphertext": encode_bytes(result.ciphertext), "metadata": metadata},
+            response={
+                "ciphertext": encode_bytes(result.ciphertext),
+                "metadata": metadata,
+                "full_response": _full_response(result.proto),
+            },
         )
 
     def encrypt_artifacts(request: dict[str, Any], result: RpcResult) -> list[Artifact]:
@@ -543,7 +563,11 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
         metadata = result.metadata.to_dict() if result.metadata else {}
         return RpcResult(
             status=ResultStatus.OK,
-            response={"signature": encode_bytes(result.signature), "metadata": metadata},
+            response={
+                "signature": encode_bytes(result.signature),
+                "metadata": metadata,
+                "full_response": _full_response(result.proto),
+            },
         )
 
     def sign_artifacts(request: dict[str, Any], result: RpcResult) -> list[Artifact]:
@@ -588,7 +612,10 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             return error_result(error)
         return RpcResult(
             status=ResultStatus.OK,
-            response={"plaintext": encode_bytes(result.plaintext)},
+            response={
+                "plaintext": encode_bytes(result.plaintext),
+                "full_response": _full_response(result.proto),
+            },
         )
 
     async def verify(request: dict[str, Any]) -> RpcResult:
@@ -604,7 +631,10 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             result = await clients.crypto.verify(built)
         except CitiusError as error:
             return error_result(error)
-        return RpcResult(status=ResultStatus.OK, response={"valid": result.valid})
+        return RpcResult(
+            status=ResultStatus.OK,
+            response={"valid": result.valid, "full_response": _full_response(result.proto)},
+        )
 
     async def digest_sign(request: dict[str, Any]) -> RpcResult:
         try:
@@ -621,7 +651,11 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
         metadata = result.metadata.to_dict() if result.metadata else {}
         return RpcResult(
             status=ResultStatus.OK,
-            response={"signature": encode_bytes(result.signature), "metadata": metadata},
+            response={
+                "signature": encode_bytes(result.signature),
+                "metadata": metadata,
+                "full_response": _full_response(result.proto),
+            },
         )
 
     async def digest_verify(request: dict[str, Any]) -> RpcResult:
@@ -638,7 +672,10 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
             result = await clients.crypto.digest_verify(built)
         except CitiusError as error:
             return error_result(error)
-        return RpcResult(status=ResultStatus.OK, response={"valid": result.valid})
+        return RpcResult(
+            status=ResultStatus.OK,
+            response={"valid": result.valid, "full_response": _full_response(result.proto)},
+        )
 
     registry.register(
         RpcAction(
@@ -719,7 +756,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         except CitiusError as error:
             return error_result(error)
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
-        return RpcResult(status=status, message=result.message, response={"success": result.success})
+        return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
     async def read_key(request: dict[str, Any]) -> RpcResult:
         try:
@@ -727,9 +764,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             result = await clients.key_management.read_key(built)
         except CitiusError as error:
             return error_result(error)
-        metadata = result.key_metadata
-        response = {"name": metadata.name, "version": metadata.version} if metadata else {}
-        return RpcResult(status=ResultStatus.OK, response=response)
+        return RpcResult(status=ResultStatus.OK, response=_full_response(result.proto))
 
     async def transform_key(request: dict[str, Any]) -> RpcResult:
         try:
@@ -742,12 +777,8 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             result = await clients.key_management.transform_key(built)
         except CitiusError as error:
             return error_result(error)
-        metadata = result.key_metadata
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
-        response: dict[str, Any] = {"success": result.success}
-        if metadata:
-            response["version"] = metadata.version
-        return RpcResult(status=status, message=result.message, response=response)
+        return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
     registry.register(
         RpcAction(
@@ -790,11 +821,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
         except CitiusError as error:
             return error_result(error)
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
-        return RpcResult(
-            status=status,
-            message=result.message,
-            response={"success": result.success, "version": result.version},
-        )
+        return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
     async def read_policy(request: dict[str, Any]) -> RpcResult:
         try:
@@ -802,15 +829,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
             result = await clients.crypto_policy.read_policy(built)
         except CitiusError as error:
             return error_result(error)
-        return RpcResult(
-            status=ResultStatus.OK,
-            response={
-                "name": result.name,
-                "policy_document": result.policy_document,
-                "format": result.format,
-                "version": result.version,
-            },
-        )
+        return RpcResult(status=ResultStatus.OK, response=_full_response(result.proto))
 
     async def update_policy(request: dict[str, Any]) -> RpcResult:
         try:
@@ -824,11 +843,7 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
         except CitiusError as error:
             return error_result(error)
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
-        return RpcResult(
-            status=status,
-            message=result.message,
-            response={"success": result.success, "version": result.version},
-        )
+        return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
     registry.register(
         RpcAction(

@@ -382,3 +382,40 @@ def test_finalize_scope_params_keeps_friendly_params_without_override() -> None:
     _finalize_scope_params(built, {}, allowed=ENCRYPTION_SCOPE_PARAM_KEYS, default_arm="aead_params")
     assert built.WhichOneof("scope_params") == "aead_params"
     assert built.aead_params.aad == b"friendly"
+
+
+# ── Full response rendering ────────────────────────────────────────────────────
+
+
+def test_full_response_includes_every_field() -> None:
+    from citius_api.messages.key_management_pb2 import ReadKeyResponse
+
+    from citius_ui.workbench.actions import _full_response
+
+    response = ReadKeyResponse()
+    response.key_metadata.name = "demo-signing-key"
+    response.key_metadata.version = 2
+    response.key_metadata.key_id = "kid-9"
+    response.key_metadata.template_id = "ecdsa-p256-sha256-der"
+    rendered = _full_response(response)
+    meta = rendered["key_metadata"]
+    # Populated and default-valued fields are both present, with proto names.
+    assert meta["name"] == "demo-signing-key"
+    assert meta["version"] == 2
+    assert meta["key_id"] == "kid-9"
+    assert meta["template_id"] == "ecdsa-p256-sha256-der"
+    assert {"provider", "policy", "extractable", "lifecycle_state", "origin"} <= set(meta)
+
+
+def test_full_response_uses_proto_field_names_not_camelcase() -> None:
+    from citius_api.messages.key_management_pb2 import CreateKeyResponse
+
+    from citius_ui.workbench.actions import _full_response
+
+    response = CreateKeyResponse(success=True, message="created")
+    response.key_metadata.key_id = "kid-1"
+    rendered = _full_response(response)
+    assert rendered["success"] is True
+    assert rendered["message"] == "created"
+    assert "key_metadata" in rendered
+    assert rendered["key_metadata"]["key_id"] == "kid-1"  # snake_case, not keyId
