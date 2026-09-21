@@ -329,24 +329,23 @@ def test_provider_requirements_json_override_wins() -> None:
 
 
 def test_encryption_params_from_friendly_aad() -> None:
-    import base64 as b64
-
     from citius_ui.workbench.actions import _encryption_params
 
-    params = _encryption_params({"aad": b64.b64encode(b"header").decode()})
+    # AAD is plain text, UTF-8 encoded to bytes for the API.
+    params = _encryption_params({"aad": "context-v1"})
     assert params is not None
-    assert params.aad == b"header"
+    assert params.aad == b"context-v1"
     assert _encryption_params({}) is None
+    assert _encryption_params({"aad": "   "}) is None
 
 
 def test_signature_context_from_friendly_domain_context() -> None:
-    import base64 as b64
-
     from citius_ui.workbench.actions import _signature_context
 
-    context = _signature_context({"domain_context": b64.b64encode(b"dom").decode()})
+    # Domain context is plain text, UTF-8 encoded to bytes for the API.
+    context = _signature_context({"domain_context": "citius-demo"})
     assert context is not None
-    assert context.context == b"dom"
+    assert context.context == b"citius-demo"
     assert _signature_context({}) is None
 
 

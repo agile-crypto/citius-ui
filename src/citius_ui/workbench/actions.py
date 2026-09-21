@@ -401,29 +401,31 @@ def _finalize_scope_params(built: Any, request: dict[str, Any], *, allowed: froz
         getattr(built, default_arm).SetInParent()
 
 
-def _optional_base64(request: dict[str, Any], key: str) -> bytes | None:
-    """Decode an optional base64 field (tolerating whitespace), or None if blank."""
+def _optional_text_bytes(request: dict[str, Any], key: str) -> bytes | None:
+    """Encode an optional plain-text field as UTF-8 bytes, or None if blank.
+
+    The API's ``aad`` / ``context`` fields are protobuf ``bytes`` but are almost
+    always human-meaningful strings (a tenant id, a domain-separation tag), so
+    the Workbench takes them as plain text — matching how the message/plaintext
+    fields work — rather than forcing the caller to base64-encode them.
+    """
     value = request.get(key)
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    raw = "".join(str(value).split())
-    try:
-        return base64.b64decode(raw, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise RequestError(f"'{key}' is not valid base64: {exc}") from exc
+    return str(value).encode("utf-8")
 
 
 def _encryption_params(request: dict[str, Any]) -> sdk.AeadParams | None:
-    """Build encryption params from the friendly 'aad' field, or None."""
-    aad = _optional_base64(request, "aad")
+    """Build encryption params from the friendly plain-text 'aad' field, or None."""
+    aad = _optional_text_bytes(request, "aad")
     if aad is None:
         return None
     return sdk.AeadParams(aad=aad)
 
 
 def _signature_context(request: dict[str, Any]) -> sdk.DomainContext | None:
-    """Build a signature context from the friendly 'domain_context' field, or None."""
-    context = _optional_base64(request, "domain_context")
+    """Build a signature context from the friendly plain-text 'domain_context' field, or None."""
+    context = _optional_text_bytes(request, "domain_context")
     if context is None:
         return None
     return sdk.DomainContext(context=context)

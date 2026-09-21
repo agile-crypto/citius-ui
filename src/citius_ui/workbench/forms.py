@@ -372,7 +372,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
             FormField(
                 "domain_context",
-                "Domain context (base64)",
+                "Domain context (text)",
                 placeholder="e.g. Ed25519ctx domain separation",
                 optional=True,
             ),
@@ -387,8 +387,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
         ),
         examples=(
             ("demo-signing-key", "Hello from Citius", "", ""),
-            # Domain-separated signature: "citius-demo" as base64.
-            ("demo-signing-key", "Hello from Citius", "Y2l0aXVzLWRlbW8=", ""),
+            # Domain-separated signature: a plain-text separation tag.
+            ("demo-signing-key", "Hello from Citius", "citius-demo", ""),
         ),
         produces="Signature",
     ),
@@ -403,7 +403,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField(
                 "domain_context",
-                "Domain context (base64, must match sign)",
+                "Domain context (text, must match sign)",
                 placeholder="e.g. Ed25519ctx domain separation",
                 optional=True,
             ),
@@ -423,7 +423,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "Hello from Citius",
                 "<paste signature>",
                 '{"key_version": 1}',
-                "Y2l0aXVzLWRlbW8=",
+                "citius-demo",
                 "",
             ),
         ),
@@ -438,7 +438,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("plaintext", "Plaintext", kind="area", placeholder="Sensitive demo payload"),
             FormField(
                 "aad",
-                "Additional authenticated data (base64)",
+                "Additional authenticated data (text)",
                 placeholder="authenticated but not encrypted",
                 optional=True,
             ),
@@ -453,8 +453,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
         ),
         examples=(
             ("demo-encryption-key", "Sensitive demo payload", "", ""),
-            # AEAD with additional authenticated data: "context-v1" as base64.
-            ("demo-encryption-key", "Sensitive demo payload", "Y29udGV4dC12MQ==", ""),
+            # AEAD with additional authenticated data: a plain-text context tag.
+            ("demo-encryption-key", "Sensitive demo payload", "context-v1", ""),
         ),
         produces="Ciphertext",
     ),
@@ -468,7 +468,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField(
                 "aad",
-                "Additional authenticated data (base64, must match encrypt)",
+                "Additional authenticated data (text, must match encrypt)",
                 placeholder="authenticated but not encrypted",
                 optional=True,
             ),
@@ -483,7 +483,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         ),
         examples=(
             ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "", ""),
-            ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "Y29udGV4dC12MQ==", ""),
+            ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "context-v1", ""),
         ),
         consumes="Ciphertext",
     ),
@@ -497,7 +497,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
                 "domain_context",
-                "Domain context (base64)",
+                "Domain context (text)",
                 placeholder="e.g. prehash domain separation",
                 optional=True,
             ),
@@ -529,7 +529,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
                 "domain_context",
-                "Domain context (base64, must match sign)",
+                "Domain context (text, must match sign)",
                 placeholder="e.g. prehash domain separation",
                 optional=True,
             ),
