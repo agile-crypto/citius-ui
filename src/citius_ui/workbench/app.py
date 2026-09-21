@@ -113,7 +113,18 @@ CSS = """
                    border-radius: 14px; box-shadow: 0 4px 16px var(--citius-shadow); height: 100%; }
 .title-container h1 { color: var(--citius-ink); font-size: 2.1rem; margin: 0 0 8px; }
 .title-container p { color: var(--citius-ink-soft); margin: 0; }
-.theme-toggle { border-radius: 999px !important; max-width: 46px !important; min-width: 46px !important; }
+/* The theme toggle floats out of the normal flow in the top-right corner so
+   it never competes with the title bar. elem_classes land on Gradio's outer
+   .block wrapper, so fixed-position that and style the inner <button>. */
+.theme-toggle { position: fixed !important; top: 12px !important; right: 14px !important; z-index: 1000 !important;
+                width: 40px !important; min-width: 40px !important; max-width: 40px !important;
+                margin: 0 !important; padding: 0 !important; }
+.theme-toggle button {
+    border-radius: 999px !important; width: 40px !important; min-width: 40px !important; height: 40px !important;
+    padding: 0 !important; background: var(--citius-surface) !important; color: var(--citius-ink) !important;
+    border: 1px solid var(--citius-border) !important; box-shadow: 0 2px 8px var(--citius-shadow) !important;
+    font-size: 1.1rem !important; line-height: 1 !important; cursor: pointer !important; }
+.theme-toggle button:hover { border-color: var(--citius-accent) !important; }
 .identity-note { border-left: 4px solid var(--citius-note-border); background: var(--citius-note-bg);
                  padding: 10px 14px; border-radius: 0 8px 8px 0; color: var(--citius-note-ink); }
 .service-body { gap: 6px !important; padding: 6px 4px 2px !important; }
@@ -603,17 +614,17 @@ def build_workbench(
         css=CSS,
         fill_width=True,
     ) as blocks:
-        with gr.Row():
-            with gr.Column(scale=10):
-                gr.HTML(
-                    "<div class='title-container'><h1>Citius API Workbench</h1>"
-                    "<p>Open a service, then open an RPC to edit its fields and run it. "
-                    "Every call is recorded in this session's history.</p></div>",
-                    padding=False,
-                )
-            with gr.Column(scale=1, min_width=50):
-                theme_toggle = gr.Button("◐", elem_classes=["theme-toggle"])
-                theme_toggle.click(None, js=_TOGGLE_THEME_JS)
+        # The theme toggle floats in the top-right corner via CSS (position:
+        # fixed) so it is always reachable without competing with the title
+        # bar for horizontal space or shrinking it.
+        theme_toggle = gr.Button("◐", elem_classes=["theme-toggle"])
+        theme_toggle.click(None, js=_TOGGLE_THEME_JS)
+        gr.HTML(
+            "<div class='title-container'><h1>Citius API Workbench</h1>"
+            "<p>Open a service, then open an RPC to edit its fields and run it. "
+            "Every call is recorded in this session's history.</p></div>",
+            padding=False,
+        )
         identity_banner = gr.Markdown("Loading identity…", elem_classes="identity-note")
         with gr.Row():
             with gr.Accordion("View granted permissions", open=False, elem_classes=["rpc-accordion"]):
