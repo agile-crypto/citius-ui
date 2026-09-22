@@ -132,6 +132,111 @@ _SAMPLE_SIGNING_POLICY_V2 = json.dumps(
     indent=2,
 )
 
+
+# ── Shared scope-specification fields ─────────────────────────────────────────
+#
+# CreateKeyRequest and TransformKeyRequest expose the SAME scope-selection
+# surface in the proto: a ScopeSpecification (scope + UniversalSecurityProperties
+# + per-scope primitive properties) plus an optional template_id. Building those
+# fields from one place keeps both forms in lock-step, so a future change to the
+# scope/security vocabulary shows up in Create AND Transform automatically.
+
+
+def _scope_field() -> FormField:
+    """The core scope dropdown shared by CreateKey and TransformKey."""
+    return FormField(
+        "scope",
+        "Scope (inferred from template when blank)",
+        kind="dropdown",
+        choices=_KEY_SCOPES,
+        optional=True,
+    )
+
+
+def _security_property_fields() -> tuple[FormField, ...]:
+    """UniversalSecurityProperties filters shared by CreateKey and TransformKey."""
+    return (
+        FormField(
+            "security_strength_bits",
+            "Min security strength (bits)",
+            kind="number",
+            optional=True,
+            group=GROUP_UNIVERSAL,
+        ),
+        FormField(
+            "nist_security_level",
+            "NIST security level",
+            kind="dropdown",
+            choices=_NIST_LEVELS,
+            optional=True,
+            group=GROUP_UNIVERSAL,
+        ),
+        FormField(
+            "nist_status",
+            "NIST status",
+            kind="dropdown",
+            choices=_NIST_STATUSES,
+            optional=True,
+            group=GROUP_UNIVERSAL,
+        ),
+        FormField(
+            "quantum_safe", "Quantum-safe", kind="dropdown", choices=_TRISTATE, optional=True, group=GROUP_UNIVERSAL
+        ),
+        FormField(
+            "fips_approved",
+            "FIPS approved",
+            kind="dropdown",
+            choices=_TRISTATE,
+            optional=True,
+            group=GROUP_UNIVERSAL,
+        ),
+    )
+
+
+def _scope_spec_field() -> FormField:
+    """The advanced full-ScopeSpecification JSON override shared by both forms."""
+    return FormField(
+        "scope_spec",
+        "Scope specification (JSON, overrides scope + filters)",
+        kind="area",
+        placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
+        optional=True,
+        group=GROUP_ADVANCED,
+    )
+
+
+def _provider_requirement_fields() -> tuple[FormField, ...]:
+    """ProviderRequirements toggles — CreateKey only (TransformKey has none)."""
+    return (
+        FormField("require_fips_140", "Require FIPS 140 certified", kind="bool", group=GROUP_PROVIDER),
+        FormField(
+            "min_fips_level",
+            "Min FIPS 140 level",
+            kind="dropdown",
+            choices=_FIPS_LEVELS,
+            optional=True,
+            group=GROUP_PROVIDER,
+        ),
+        FormField("require_memory_safe", "Require memory-safe", kind="bool", group=GROUP_PROVIDER),
+        FormField("require_constant_time", "Require constant-time", kind="bool", group=GROUP_PROVIDER),
+        FormField("require_side_channel_hardened", "Require side-channel hardened", kind="bool", group=GROUP_PROVIDER),
+        FormField("require_no_known_cve", "Require no known CVEs", kind="bool", group=GROUP_PROVIDER),
+        FormField("prefer_hardware_accelerated", "Prefer hardware acceleration", kind="bool", group=GROUP_PROVIDER),
+    )
+
+
+def _provider_requirements_field() -> FormField:
+    """The advanced ProviderRequirements JSON override — CreateKey only."""
+    return FormField(
+        "provider_requirements",
+        "Provider requirements (JSON, overrides toggles)",
+        kind="area",
+        placeholder='{"fips_140_certified": true, "min_fips_level": "FIPS_140_LEVEL_3"}',
+        optional=True,
+        group=GROUP_ADVANCED,
+    )
+
+
 FORMS: tuple[RpcFormSpec, ...] = (
     RpcFormSpec(
         "CryptoPolicyService",
@@ -186,82 +291,14 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("policy", "Policy", placeholder="demo-signing-policy"),
             FormField("template_id", "Template ID", placeholder="ecdsa-p256-sha256-der", optional=True),
             FormField("provider_id", "Provider ID", placeholder="software", optional=True),
-            FormField(
-                "scope",
-                "Scope (inferred from template when blank)",
-                kind="dropdown",
-                choices=_KEY_SCOPES,
-                optional=True,
-            ),
-            # Security-property filters (all optional; blank = leave unset).
-            FormField(
-                "security_strength_bits",
-                "Min security strength (bits)",
-                kind="number",
-                optional=True,
-                group=GROUP_UNIVERSAL,
-            ),
-            FormField(
-                "nist_security_level",
-                "NIST security level",
-                kind="dropdown",
-                choices=_NIST_LEVELS,
-                optional=True,
-                group=GROUP_UNIVERSAL,
-            ),
-            FormField(
-                "nist_status",
-                "NIST status",
-                kind="dropdown",
-                choices=_NIST_STATUSES,
-                optional=True,
-                group=GROUP_UNIVERSAL,
-            ),
-            FormField(
-                "quantum_safe", "Quantum-safe", kind="dropdown", choices=_TRISTATE, optional=True, group=GROUP_UNIVERSAL
-            ),
-            FormField(
-                "fips_approved",
-                "FIPS approved",
-                kind="dropdown",
-                choices=_TRISTATE,
-                optional=True,
-                group=GROUP_UNIVERSAL,
-            ),
-            # Provider-requirement filters (all optional).
-            FormField("require_fips_140", "Require FIPS 140 certified", kind="bool", group=GROUP_PROVIDER),
-            FormField(
-                "min_fips_level",
-                "Min FIPS 140 level",
-                kind="dropdown",
-                choices=_FIPS_LEVELS,
-                optional=True,
-                group=GROUP_PROVIDER,
-            ),
-            FormField("require_memory_safe", "Require memory-safe", kind="bool", group=GROUP_PROVIDER),
-            FormField("require_constant_time", "Require constant-time", kind="bool", group=GROUP_PROVIDER),
-            FormField(
-                "require_side_channel_hardened", "Require side-channel hardened", kind="bool", group=GROUP_PROVIDER
-            ),
-            FormField("require_no_known_cve", "Require no known CVEs", kind="bool", group=GROUP_PROVIDER),
-            FormField("prefer_hardware_accelerated", "Prefer hardware acceleration", kind="bool", group=GROUP_PROVIDER),
-            # Advanced escape hatch: a full ScopeSpecification / ProviderRequirements JSON wins.
-            FormField(
-                "scope_spec",
-                "Scope specification (JSON, overrides scope + filters)",
-                kind="area",
-                placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
-                optional=True,
-                group=GROUP_ADVANCED,
-            ),
-            FormField(
-                "provider_requirements",
-                "Provider requirements (JSON, overrides toggles)",
-                kind="area",
-                placeholder='{"fips_140_certified": true, "min_fips_level": "FIPS_140_LEVEL_3"}',
-                optional=True,
-                group=GROUP_ADVANCED,
-            ),
+            # Shared scope-selection surface (also used by TransformKey).
+            _scope_field(),
+            *_security_property_fields(),
+            # Provider-requirement filters — CreateKey only.
+            *_provider_requirement_fields(),
+            # Advanced escape hatches: a full ScopeSpecification / ProviderRequirements JSON wins.
+            _scope_spec_field(),
+            _provider_requirements_field(),
         ),
         examples=(
             (
@@ -349,22 +386,28 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("name", "Key name", placeholder="demo-signing-key"),
             FormField("template_id", "Template ID", placeholder="ml-dsa-65", optional=True),
             FormField("retain_key_bytes", "Retain key bytes", kind="bool"),
-            FormField(
-                "scope",
-                "Scope (inferred from template when blank)",
-                kind="dropdown",
-                choices=_KEY_SCOPES,
-                optional=True,
-            ),
-            FormField(
-                "scope_spec",
-                "Scope specification (JSON, overrides scope)",
-                kind="area",
-                placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
-                optional=True,
+            # Same scope-selection surface as CreateKey (shared builders): the
+            # TransformKeyRequest proto carries the identical ScopeSpecification.
+            # TransformKey has no provider_requirements arm, so those toggles are
+            # intentionally omitted here.
+            _scope_field(),
+            *_security_property_fields(),
+            _scope_spec_field(),
+        ),
+        examples=(
+            (
+                "demo-signing-key",
+                "ml-dsa-65",
+                False,
+                "SIGNATURE_STANDARD",
+                None,
+                "",
+                "",
+                "",
+                "",
+                "",
             ),
         ),
-        examples=(("demo-signing-key", "ml-dsa-65", False, "SIGNATURE_STANDARD", ""),),
     ),
     RpcFormSpec(
         "CryptoService",

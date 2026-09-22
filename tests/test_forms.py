@@ -87,6 +87,24 @@ def test_digest_forms_expose_hash_algorithm() -> None:
         assert "hash_algorithm" in {field.key for field in spec.fields}
 
 
+def test_create_and_transform_key_share_the_scope_selection_fields() -> None:
+    # The proto puts the same ScopeSpecification surface on both requests, so
+    # the UI shares those fields from one builder. This guards that they stay
+    # in lock-step: any scope/security field added to the shared builders must
+    # appear in BOTH forms.
+    shared = {"scope", "security_strength_bits", "nist_security_level", "nist_status", "quantum_safe", "fips_approved"}
+    create = {field.key for field in FORMS_BY_METHOD[("KeyManagementService", "CreateKey")].fields}
+    transform = {field.key for field in FORMS_BY_METHOD[("KeyManagementService", "TransformKey")].fields}
+    assert shared <= create
+    assert shared <= transform
+    # Both expose the advanced scope_spec JSON escape hatch.
+    assert "scope_spec" in create
+    assert "scope_spec" in transform
+    # provider_requirements is CreateKey-only (no arm on TransformKeyRequest).
+    assert "provider_requirements" in create
+    assert "provider_requirements" not in transform
+
+
 def test_create_key_groups_filters_into_intuitive_sections() -> None:
     from citius_ui.workbench.forms import GROUP_ADVANCED, GROUP_PROVIDER, GROUP_UNIVERSAL
 
