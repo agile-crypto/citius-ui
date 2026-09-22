@@ -70,6 +70,9 @@ class RpcFormSpec:
 GROUP_UNIVERSAL = "Universal security properties"
 GROUP_PROVIDER = "Provider requirements"
 GROUP_ADVANCED = "Advanced — raw JSON overrides"
+# Consumer RPCs (Verify/Decrypt) take a pasted bundle up front; the raw
+# value + metadata fields it fills are demoted into this manual section.
+GROUP_MANUAL = "Advanced — enter value and metadata manually"
 
 
 _POLICY_FORMATS = ("json", "rego", "cedar", "yaml")
@@ -399,14 +402,14 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
-            FormField("signature", "Signature (base64)", kind="area"),
-            FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField(
                 "domain_context",
                 "Domain context (text, must match sign)",
                 placeholder="e.g. Ed25519ctx domain separation",
                 optional=True,
             ),
+            FormField("signature", "Signature (base64)", kind="area", group=GROUP_MANUAL),
+            FormField("metadata", "Operation metadata (JSON)", kind="area", group=GROUP_MANUAL),
             FormField(
                 "scope_params",
                 "Scope parameters (JSON, advanced override)",
@@ -417,13 +420,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "Hello from Citius", "<paste signature>", '{"key_version": 1}', "", ""),
+            ("demo-signing-key", "Hello from Citius", "", "<paste signature>", '{"key_version": 1}', ""),
             (
                 "demo-signing-key",
                 "Hello from Citius",
+                "citius-demo",
                 "<paste signature>",
                 '{"key_version": 1}',
-                "citius-demo",
                 "",
             ),
         ),
@@ -464,14 +467,14 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Decrypt",
         (
             FormField("key_name", "Key name", placeholder="demo-encryption-key"),
-            FormField("ciphertext", "Ciphertext (base64)", kind="area"),
-            FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField(
                 "aad",
                 "Additional authenticated data (text, must match encrypt)",
                 placeholder="authenticated but not encrypted",
                 optional=True,
             ),
+            FormField("ciphertext", "Ciphertext (base64)", kind="area", group=GROUP_MANUAL),
+            FormField("metadata", "Operation metadata (JSON)", kind="area", group=GROUP_MANUAL),
             FormField(
                 "scope_params",
                 "Scope parameters (JSON, advanced override)",
@@ -482,8 +485,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "", ""),
-            ("demo-encryption-key", "<paste ciphertext>", '{"key_version": 1}', "context-v1", ""),
+            ("demo-encryption-key", "", "<paste ciphertext>", '{"key_version": 1}', ""),
+            ("demo-encryption-key", "context-v1", "<paste ciphertext>", '{"key_version": 1}', ""),
         ),
         consumes="Ciphertext",
     ),
@@ -524,8 +527,6 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
             FormField("digest", "Digest (base64)", kind="area"),
-            FormField("signature", "Signature (base64)", kind="area"),
-            FormField("metadata", "Operation metadata (JSON)", kind="area"),
             FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
                 "domain_context",
@@ -533,6 +534,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 placeholder="e.g. prehash domain separation",
                 optional=True,
             ),
+            FormField("signature", "Signature (base64)", kind="area", group=GROUP_MANUAL),
+            FormField("metadata", "Operation metadata (JSON)", kind="area", group=GROUP_MANUAL),
             FormField(
                 "scope_params",
                 "Scope parameters (JSON, advanced override)",
@@ -543,8 +546,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "", "", ""),
-            ("demo-signing-key", "<paste digest>", "<paste signature>", '{"key_version": 1}', "SHA256", "", ""),
+            ("demo-signing-key", "<paste digest>", "", "", "<paste signature>", '{"key_version": 1}', ""),
+            ("demo-signing-key", "<paste digest>", "SHA256", "", "<paste signature>", '{"key_version": 1}', ""),
         ),
         consumes="Signature",
     ),

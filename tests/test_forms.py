@@ -12,9 +12,14 @@ def test_build_request_drops_empty_and_none() -> None:
     assert request == {"name": "demo-key", "policy": "demo-policy"}
 
 
+def _values_for(spec: object, **by_key: object) -> list[object]:
+    """Build a positional value list for a form, setting named fields by key."""
+    return [by_key.get(field.key, "") for field in spec.fields]  # type: ignore[attr-defined]
+
+
 def test_build_request_parses_metadata_json() -> None:
     spec = FORMS_BY_METHOD[("CryptoService", "Verify")]
-    values: list[object] = ["demo-key", "msg", "c2ln", '{"key_version": 3}', *([""] * (len(spec.fields) - 4))]
+    values = _values_for(spec, key_name="demo-key", message="msg", signature="c2ln", metadata='{"key_version": 3}')
     request = build_request(spec, values)
     assert request["metadata"] == {"key_version": 3}
     assert request["signature"] == "c2ln"
@@ -22,14 +27,14 @@ def test_build_request_parses_metadata_json() -> None:
 
 def test_build_request_rejects_invalid_metadata_json() -> None:
     spec = FORMS_BY_METHOD[("CryptoService", "Decrypt")]
-    values: list[object] = ["demo-key", "ct", "not json", *([""] * (len(spec.fields) - 3))]
+    values = _values_for(spec, key_name="demo-key", ciphertext="ct", metadata="not json")
     with pytest.raises(FormValidationError, match="must be valid JSON"):
         build_request(spec, values)
 
 
 def test_build_request_rejects_non_object_metadata() -> None:
     spec = FORMS_BY_METHOD[("CryptoService", "Decrypt")]
-    values: list[object] = ["demo-key", "ct", "[1, 2]", *([""] * (len(spec.fields) - 3))]
+    values = _values_for(spec, key_name="demo-key", ciphertext="ct", metadata="[1, 2]")
     with pytest.raises(FormValidationError, match="JSON object"):
         build_request(spec, values)
 
@@ -127,3 +132,17 @@ def test_crypto_scope_params_are_grouped_as_advanced() -> None:
         spec = FORMS_BY_METHOD[("CryptoService", method)]
         scope_params = next(field for field in spec.fields if field.key == "scope_params")
         assert scope_params.group == GROUP_ADVANCED
+
+
+def test_consumer_value_and_metadata_are_demoted_to_manual_section() -> None:
+    from citius_ui.workbench.forms import GROUP_MANUAL
+
+    # Verify/Decrypt/DigestVerify take a pasted bundle up front; their opaque
+    # value + metadata fields are demoted to the manual advanced section.
+    for method, value_key in (("Verify", "signature"), ("Decrypt", "ciphertext"), ("DigestVerify", "signature")):
+        spec = FORMS_BY_METHOD[("CryptoService", method)]
+        by_key = {field.key: field for field in spec.fields}
+        assert by_key[value_key].group == GROUP_MANUAL
+        assert by_key["metadata"].group == GROUP_MANUAL
+        # The user-supplied inputs stay core (up front, not grouped).
+        assert by_key["key_name"].group == ""

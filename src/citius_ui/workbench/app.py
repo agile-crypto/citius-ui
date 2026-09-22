@@ -341,12 +341,13 @@ def build_workbench(
     def _run_form(
         spec: RpcFormSpec,
     ) -> Any:
-        async def _handler(request: gr.Request, *values: object) -> tuple[str, str, Any, Any]:
+        async def _handler(request: gr.Request, *values: object) -> tuple[Any, ...]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
                 return (
                     "UNAUTHENTICATED",
                     _render_response("UNAUTHENTICATED", "No active session. Sign in again."),
+                    gr.update(),
                     gr.update(),
                     gr.update(),
                 )
@@ -358,6 +359,7 @@ def build_workbench(
                     _render_response("INVALID_ARGUMENT", str(exc)),
                     gr.update(),
                     gr.update(),
+                    gr.update(),
                 )
 
             try:
@@ -366,6 +368,7 @@ def build_workbench(
                 return (
                     "UNAVAILABLE",
                     _render_response("UNAVAILABLE", f"could not create a Citius client: {exc}"),
+                    gr.update(),
                     gr.update(),
                     gr.update(),
                 )
@@ -394,21 +397,26 @@ def build_workbench(
                     pass
 
             if spec.produces:
-                rows = _producer_rows(session.history_id, spec.method)
-                # rows are newest-first (see MemoryHistoryStore.list), so the
-                # first row is this response's bundle when the call succeeded.
-                latest_bundle = rows[0][3] if rows else ""
-                return status, response, rows, latest_bundle
-            return status, response, gr.update(), gr.update()
+                labels, mapping, latest = _producer_history(session.history_id, spec.method)
+                # Select the newest entry and show its copyable bundle.
+                selected = labels[0] if labels else None
+                return (
+                    status,
+                    response,
+                    gr.update(choices=labels, value=selected),
+                    mapping,
+                    latest,
+                )
+            return status, response, gr.update(), gr.update(), gr.update()
 
         return _handler
 
-    def _clear_producer_history(method: str) -> Callable[[gr.Request], Awaitable[tuple[list[list[str]], str]]]:
-        async def _handler(request: gr.Request) -> tuple[list[list[str]], str]:
+    def _clear_producer_history(method: str) -> Callable[[gr.Request], Awaitable[tuple[Any, dict[str, str], str]]]:
+        async def _handler(request: gr.Request) -> tuple[Any, dict[str, str], str]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is not None:
                 history.remove_method(session.history_id, method)
-            return [], ""
+            return gr.update(choices=[], value=None), {}, ""
 
         return _handler
 
@@ -449,21 +457,28 @@ def build_workbench(
 
         return _handler
 
-    def _producer_rows(history_id: str, method: str) -> list[list[str]]:
-        rows: list[list[str]] = []
+    def _producer_history(history_id: str, method: str) -> tuple[list[str], dict[str, str], str]:
+        """Return (dropdown labels, label->bundle map, latest bundle) for a producer.
+
+        Records are newest-first (see MemoryHistoryStore.list). Each produced
+        artifact becomes one selectable entry whose bundle JSON can be copied
+        and pasted straight into the consumer RPC.
+        """
+        labels: list[str] = []
+        mapping: dict[str, str] = {}
         for record in history.list(history_id):
             if record.method != method:
                 continue
             for artifact in record.artifacts:
-                rows.append(
-                    [
-                        record.timestamp.strftime("%H:%M:%S"),
-                        artifact.key_name,
-                        "" if artifact.key_version is None else str(artifact.key_version),
-                        json.dumps(artifact.bundle(), sort_keys=True),
-                    ]
-                )
-        return rows
+                version = "" if artifact.key_version is None else f" · v{artifact.key_version}"
+                label = f"{record.timestamp.strftime('%H:%M:%S')} · {artifact.key_name}{version}"
+                # Disambiguate identical labels (same second/key/version).
+                if label in mapping:
+                    label = f"{label} ({len(mapping)})"
+                mapping[label] = json.dumps(artifact.bundle(), indent=2)
+                labels.append(label)
+        latest = mapping[labels[0]] if labels else ""
+        return labels, mapping, latest
 
     def _render_rpc_body(spec: RpcFormSpec, *, visible: bool) -> gr.Column:
         """Render one method's fields, actions, and output, toggled by the method dropdown."""
@@ -489,20 +504,20 @@ def build_workbench(
             inputs = [components[field.key] for field in spec.fields]
 
             if spec.consumes:
-                with gr.Accordion(f"Paste a {spec.consumes} bundle", open=False, elem_classes=["rpc-accordion"]):
+                with gr.Accordion(f"Paste a {spec.consumes} bundle", open=True, elem_classes=["rpc-accordion"]):
                     gr.Markdown(
-                        f"Copy a {spec.consumes} bundle from the **Latest response bundle** box of the "
-                        "producing RPC — typically in another browser signed in as a different identity, "
-                        "as in the multi-browser demo runbooks. Only the bundle crosses browsers, never a "
-                        "token. Paste it here, then fill the fields above."
+                        f"Paste a {spec.consumes} bundle copied from the producing RPC's **Response history** "
+                        "(here or in another browser signed in as a different identity, as in the multi-browser "
+                        "demo runbooks). Only the bundle crosses browsers, never a token. Filling from the bundle "
+                        "populates the value and metadata for you; the manual fields below are for advanced use."
                     )
                     paste_box = gr.Textbox(
                         label=f"{spec.consumes} bundle (JSON)",
-                        lines=3,
-                        max_lines=10,
+                        lines=4,
+                        max_lines=12,
                         placeholder='{"key_name": "...", ...}',
                     )
-                    fill_button = gr.Button("Fill fields from bundle", variant="secondary")
+                    fill_button = gr.Button("Fill fields from bundle", variant="primary")
                     fill_note = gr.Markdown()
                 fill_button.click(_fill_from_bundle(spec), inputs=[paste_box], outputs=[*inputs, fill_note])
 
@@ -511,48 +526,58 @@ def build_workbench(
                 clear = gr.Button("Clear", variant="secondary")
             with gr.Accordion("Output", open=True, visible=False, elem_classes=["output-zone"]) as output_row:
                 status_box = gr.Textbox(label="Status", interactive=False)
-                response_box = gr.Code(language="json", label="Response", interactive=False)
-                history_table = None
-                latest_bundle = None
+                # The full response always exists: the complete server reply.
+                response_box = gr.Code(language="json", label="Full response", interactive=False)
+                history_select = None
+                bundle_state = None
+                bundle_box = None
                 if spec.produces:
-                    latest_bundle = gr.Textbox(
-                        label=(
-                            f"Latest response bundle — copy into {_CONSUMER_HINT.get(spec.method, 'a compatible RPC')} "
-                            "(often in another browser)"
-                        ),
-                        interactive=False,
-                        show_copy_button=True,
-                        lines=3,
-                        max_lines=10,
+                    consumer = _CONSUMER_HINT.get(spec.method, "a compatible RPC")
+                    gr.Markdown(
+                        f"**Response history** — pick any past {spec.method} response, then copy its bundle "
+                        f"(key name, version, and value + metadata) and paste it into **{consumer}**."
                     )
-                    history_table = gr.Dataframe(
-                        headers=["Time", "Key name", "Key version", "Bundle"],
-                        col_count=(4, "fixed"),
-                        label=f"Previous {spec.method} responses",
-                        interactive=False,
-                        wrap=True,
+                    # label -> bundle JSON, so selecting an entry shows its bundle.
+                    bundle_state = gr.State({})
+                    history_select = gr.Dropdown(
+                        label="Response history (newest first)",
+                        choices=[],
+                        interactive=True,
+                    )
+                    # Editable + copy button so the bundle is mouse-selectable and
+                    # copyable, unlike the old read-only dataframe cell.
+                    bundle_box = gr.Textbox(
+                        label=f"Bundle — copy and paste into {consumer}",
+                        interactive=True,
+                        show_copy_button=True,
+                        lines=6,
+                        max_lines=20,
+                        placeholder="Run this RPC to produce a bundle, or select an entry above.",
                     )
                     clear_history = gr.Button("Clear history", variant="secondary", size="sm")
+
+                    def _show_selected(label: str | None, mapping: dict[str, str]) -> str:
+                        return mapping.get(label, "") if label else ""
+
+                    history_select.change(_show_selected, inputs=[history_select, bundle_state], outputs=bundle_box)
             if spec.examples:
                 with gr.Accordion("Examples", open=True, elem_classes=["examples-zone"]):
                     gr.Examples(examples=[list(example) for example in spec.examples], inputs=inputs)
 
-            outputs = [
-                status_box,
-                response_box,
-                history_table if history_table is not None else status_box,
-                latest_bundle if latest_bundle is not None else status_box,
-            ]
+            if spec.produces and history_select is not None:
+                outputs = [status_box, response_box, history_select, bundle_state, bundle_box]
+            else:
+                outputs = [status_box, response_box, status_box, status_box, status_box]
             run.click(lambda: gr.update(visible=True), outputs=output_row)
             run.click(_run_form(spec), inputs=[*inputs], outputs=outputs)
 
             clear_targets = [*inputs, status_box, response_box]
             clear.click(lambda targets=clear_targets: [None for _ in targets], outputs=clear_targets)
 
-            if history_table is not None and latest_bundle is not None:
+            if spec.produces and history_select is not None:
                 clear_history.click(
                     _clear_producer_history(spec.method),
-                    outputs=[history_table, latest_bundle],
+                    outputs=[history_select, bundle_state, bundle_box],
                 )
         return body
 
