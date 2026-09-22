@@ -401,6 +401,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Verify",
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
+            FormField(
+                "bundle",
+                "Signature bundle (paste from a Sign response)",
+                kind="area",
+                placeholder='{"key_name": "...", "signature": "...", "metadata": {...}, "message": "..."}',
+                optional=True,
+            ),
             FormField("message", "Message", kind="area", placeholder="Hello from Citius"),
             FormField(
                 "domain_context",
@@ -420,15 +427,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "Hello from Citius", "", "<paste signature>", '{"key_version": 1}', ""),
-            (
-                "demo-signing-key",
-                "Hello from Citius",
-                "citius-demo",
-                "<paste signature>",
-                '{"key_version": 1}',
-                "",
-            ),
+            # Bundle-first: paste one bundle, leave the manual fields blank.
+            ("demo-signing-key", "<paste Sign bundle>", "", "", "", "", ""),
         ),
         consumes="Signature",
     ),
@@ -468,6 +468,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("key_name", "Key name", placeholder="demo-encryption-key"),
             FormField(
+                "bundle",
+                "Ciphertext bundle (paste from an Encrypt response)",
+                kind="area",
+                placeholder='{"key_name": "...", "ciphertext": "...", "metadata": {...}}',
+                optional=True,
+            ),
+            FormField(
                 "aad",
                 "Additional authenticated data (text, must match encrypt)",
                 placeholder="authenticated but not encrypted",
@@ -484,10 +491,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(
-            ("demo-encryption-key", "", "<paste ciphertext>", '{"key_version": 1}', ""),
-            ("demo-encryption-key", "context-v1", "<paste ciphertext>", '{"key_version": 1}', ""),
-        ),
+        examples=(("demo-encryption-key", "<paste Encrypt bundle>", "", "", "", ""),),
         consumes="Ciphertext",
     ),
     RpcFormSpec(
@@ -526,6 +530,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Digest verify",
         (
             FormField("key_name", "Key name", placeholder="demo-signing-key"),
+            FormField(
+                "bundle",
+                "Signature bundle (paste from a Digest sign response)",
+                kind="area",
+                placeholder='{"key_name": "...", "signature": "...", "metadata": {...}, "digest": "..."}',
+                optional=True,
+            ),
             FormField("digest", "Digest (base64)", kind="area"),
             FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
@@ -545,10 +556,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(
-            ("demo-signing-key", "<paste digest>", "", "", "<paste signature>", '{"key_version": 1}', ""),
-            ("demo-signing-key", "<paste digest>", "SHA256", "", "<paste signature>", '{"key_version": 1}', ""),
-        ),
+        examples=(("demo-signing-key", "<paste Digest sign bundle>", "", "", "", "", "", ""),),
         consumes="Signature",
     ),
 )

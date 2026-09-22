@@ -160,6 +160,33 @@ def _require_text(request: dict[str, Any], key: str) -> str:
     return str(_require(request, key)).strip()
 
 
+def _merge_bundle(request: dict[str, Any]) -> dict[str, Any]:
+    """Expand a pasted producer 'bundle' into the request's individual fields.
+
+    Verify/Decrypt take the producer's copyable bundle (value + metadata as one
+    JSON object) as the primary input. This parses that bundle and fills any
+    field the caller did not set directly, so ``{"ciphertext": ..., "metadata":
+    ...}`` from an Encrypt response drives Decrypt with a single paste. Fields
+    the caller set explicitly (the advanced split inputs) win over the bundle.
+    """
+    raw = request.get("bundle")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return request
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RequestError(f"'bundle' is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RequestError("'bundle' must be a JSON object")
+    merged = dict(request)
+    for key, value in raw.items():
+        current = merged.get(key)
+        if current is None or (isinstance(current, str) and not current.strip()):
+            merged[key] = value
+    return merged
+
+
 def _base64_field(request: dict[str, Any], key: str) -> bytes:
     """Decode a required base64 field, tolerating pasted whitespace."""
     raw = "".join(_require_text(request, key).split())
@@ -600,6 +627,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def decrypt(request: dict[str, Any]) -> RpcResult:
         try:
+            request = _merge_bundle(request)
             built = sdk_crypto.decrypt_request(
                 _require_text(request, "key_name"),
                 _base64_field(request, "ciphertext"),
@@ -620,6 +648,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def verify(request: dict[str, Any]) -> RpcResult:
         try:
+            request = _merge_bundle(request)
             built = sdk_crypto.verify_request(
                 _require_text(request, "key_name"),
                 _as_bytes(_require(request, "message")),
@@ -660,6 +689,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def digest_verify(request: dict[str, Any]) -> RpcResult:
         try:
+            request = _merge_bundle(request)
             built = sdk_crypto.digest_verify_request(
                 _require_text(request, "key_name"),
                 _base64_field(request, "digest"),

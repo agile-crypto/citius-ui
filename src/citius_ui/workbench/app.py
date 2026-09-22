@@ -420,43 +420,6 @@ def build_workbench(
 
         return _handler
 
-    def _fill_from_bundle(spec: RpcFormSpec) -> Callable[[str], tuple[Any, ...]]:
-        """Parse a pasted producer bundle and fill the matching request fields.
-
-        Fields whose key isn't present in the bundle are left untouched
-        (gr.update() is a no-op), so pasting a bundle from an incompatible
-        producer still fills whatever fields do match instead of failing
-        outright or blanking unrelated fields (e.g. scope_params).
-        """
-
-        def _handler(bundle_text: str) -> tuple[Any, ...]:
-            no_op = tuple(gr.update() for _ in spec.fields)
-            text = (bundle_text or "").strip()
-            if not text:
-                return (*no_op, "Paste a bundle JSON first.")
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as exc:
-                return (*no_op, f"Not valid JSON: {exc}")
-            if not isinstance(parsed, dict):
-                return (*no_op, "Bundle must be a JSON object.")
-
-            values: list[Any] = []
-            filled = 0
-            for field in spec.fields:
-                if field.key not in parsed:
-                    values.append(gr.update())
-                    continue
-                raw = parsed[field.key]
-                if field.key == "metadata" and not isinstance(raw, str):
-                    raw = json.dumps(raw)
-                values.append(raw)
-                filled += 1
-            note = f"Filled {filled} field(s) from the bundle." if filled else "Bundle had no fields matching this RPC."
-            return (*values, note)
-
-        return _handler
-
     def _producer_history(history_id: str, method: str) -> tuple[list[str], dict[str, str], str]:
         """Return (dropdown labels, label->bundle map, latest bundle) for a producer.
 
@@ -502,24 +465,6 @@ def build_workbench(
                             outputs=group_inputs,
                         )
             inputs = [components[field.key] for field in spec.fields]
-
-            if spec.consumes:
-                with gr.Accordion(f"Paste a {spec.consumes} bundle", open=True, elem_classes=["rpc-accordion"]):
-                    gr.Markdown(
-                        f"Paste a {spec.consumes} bundle copied from the producing RPC's **Response history** "
-                        "(here or in another browser signed in as a different identity, as in the multi-browser "
-                        "demo runbooks). Only the bundle crosses browsers, never a token. Filling from the bundle "
-                        "populates the value and metadata for you; the manual fields below are for advanced use."
-                    )
-                    paste_box = gr.Textbox(
-                        label=f"{spec.consumes} bundle (JSON)",
-                        lines=4,
-                        max_lines=12,
-                        placeholder='{"key_name": "...", ...}',
-                    )
-                    fill_button = gr.Button("Fill fields from bundle", variant="primary")
-                    fill_note = gr.Markdown()
-                fill_button.click(_fill_from_bundle(spec), inputs=[paste_box], outputs=[*inputs, fill_note])
 
             with gr.Row():
                 run = gr.Button(spec.action_label, variant="primary")

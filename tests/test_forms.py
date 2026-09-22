@@ -146,3 +146,14 @@ def test_consumer_value_and_metadata_are_demoted_to_manual_section() -> None:
         assert by_key["metadata"].group == GROUP_MANUAL
         # The user-supplied inputs stay core (up front, not grouped).
         assert by_key["key_name"].group == ""
+
+
+def test_consumers_expose_a_core_bundle_paste_field() -> None:
+    # Verify/Decrypt/DigestVerify accept the producer's copyable bundle as a
+    # single core input; the server merges it into the split fields.
+    for method in ("Verify", "Decrypt", "DigestVerify"):
+        spec = FORMS_BY_METHOD[("CryptoService", method)]
+        by_key = {field.key: field for field in spec.fields}
+        assert "bundle" in by_key, method
+        assert by_key["bundle"].group == "", method
+        assert by_key["bundle"].optional is True, method

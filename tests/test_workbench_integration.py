@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import grpc
 import pytest
 import pytest_asyncio
@@ -135,8 +137,8 @@ async def test_digest_sign_bundle_carries_the_digest_for_digest_verify(crypto_en
     assert bundle["digest"] == digest
     assert "message" not in bundle
 
-    # The bundle is exactly what the Workbench's "Paste bundle" -> "Fill
-    # fields from bundle" flow would hand to DigestVerify.
+    # The bundle is exactly what the Workbench's bundle-paste flow hands to
+    # DigestVerify (see the bundle-string test below for that path).
     verify_result, _ = await executor.execute(
         registry.get("CryptoService", "DigestVerify"),
         context,
@@ -146,6 +148,43 @@ async def test_digest_sign_bundle_carries_the_digest_for_digest_verify(crypto_en
             "signature": bundle["signature"],
             "metadata": bundle["metadata"],
         },
+    )
+    assert verify_result.status is ResultStatus.OK
+    assert verify_result.response["valid"] is True
+    await clients.close()
+
+
+@pytest.mark.asyncio
+async def test_pasting_a_bundle_string_drives_digest_verify(crypto_endpoint) -> None:
+    # Bundle-first flow: the user pastes the producer's copyable bundle JSON
+    # into DigestVerify's single "bundle" field and runs. The server merges
+    # the bundle into digest/signature/metadata without any split inputs.
+    config = AppConfig(
+        citius_endpoint=crypto_endpoint,
+        citius_tls_enabled=False,
+        session_cookie_secure=False,
+    )
+
+    async def token() -> str:
+        return "demo-token"
+
+    clients = CitiusClients(config, token)
+    registry = build_registry(clients)
+    history = MemoryHistoryStore()
+    executor = ActionExecutor(history)
+    context = ExecutionContext(session_id="hist-3", subject="citius-producer")
+
+    _, sign_record = await executor.execute(
+        registry.get("CryptoService", "DigestSign"),
+        context,
+        {"key_name": "demo-signing-key", "digest": "8f434346"},
+    )
+    bundle = sign_record.artifacts[0].bundle()
+
+    verify_result, _ = await executor.execute(
+        registry.get("CryptoService", "DigestVerify"),
+        context,
+        {"bundle": json.dumps(bundle)},
     )
     assert verify_result.status is ResultStatus.OK
     assert verify_result.response["valid"] is True
