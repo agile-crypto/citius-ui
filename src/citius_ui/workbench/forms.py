@@ -328,6 +328,29 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "",
                 "",
             ),
+            # Digest signing needs a prehashed-scope key: the catalog declares
+            # DigestSign/DigestVerify only on prehashed signature scopes.
+            (
+                "demo-digest-key",
+                "demo-signing-policy",
+                "ecdsa-p256-prehashed-der",
+                "software",
+                "SIGNATURE_PREHASHED",
+                None,
+                "",
+                "",
+                "",
+                "",
+                False,
+                "",
+                False,
+                False,
+                False,
+                False,
+                False,
+                "",
+                "",
+            ),
             (
                 "demo-encryption-key",
                 "demo-encryption-policy",
@@ -575,7 +598,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "DigestSign",
         "Digest sign",
         (
-            FormField("key_name", "Key name", placeholder="demo-signing-key"),
+            FormField("key_name", "Key name (prehashed-scope key)", placeholder="demo-digest-key"),
             FormField("digest", "Digest (base64)", kind="area"),
             FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
@@ -594,9 +617,9 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "<paste digest>", "", "", ""),
+            ("demo-digest-key", "<paste digest>", "", "", ""),
             # Declare the hash that produced the digest.
-            ("demo-signing-key", "<paste digest>", "SHA256", "", ""),
+            ("demo-digest-key", "<paste digest>", "SHA256", "", ""),
         ),
         produces="Signature",
     ),
@@ -605,7 +628,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "DigestVerify",
         "Digest verify",
         (
-            FormField("key_name", "Key name", placeholder="demo-signing-key"),
+            FormField("key_name", "Key name (prehashed-scope key)", placeholder="demo-digest-key"),
             FormField(
                 "bundle",
                 "Signature bundle (paste from a Digest sign response)",
@@ -632,7 +655,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-signing-key", "<paste Digest sign bundle>", "", "", "", "", "", ""),),
+        examples=(("demo-digest-key", "<paste Digest sign bundle>", "", "", "", "", "", ""),),
         consumes="Signature",
     ),
 )

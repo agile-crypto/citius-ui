@@ -188,3 +188,21 @@ def test_transform_key_explains_and_exemplifies_retain_key_bytes() -> None:
     for example in retain_examples:
         assert example[keys.index("template_id")], "retain examples must name a target template"
         assert len(example) == len(keys)
+
+
+def test_digest_forms_use_a_prehashed_key_created_by_an_example() -> None:
+    # The catalog declares DigestSign/DigestVerify only on prehashed scopes, so
+    # the digest examples must target a key created with a prehashed template.
+    create = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
+    keys = [field.key for field in create.fields]
+    created = {
+        example[keys.index("name")]: (example[keys.index("template_id")], example[keys.index("scope")])
+        for example in create.examples
+    }
+    for method in ("DigestSign", "DigestVerify"):
+        spec = FORMS_BY_METHOD[("CryptoService", method)]
+        key_index = [field.key for field in spec.fields].index("key_name")
+        for example in spec.examples:
+            template_id, scope = created[example[key_index]]
+            assert "prehashed" in template_id
+            assert scope == "SIGNATURE_PREHASHED"
