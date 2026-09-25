@@ -175,3 +175,16 @@ def test_consumers_expose_a_core_bundle_paste_field() -> None:
         assert "bundle" in by_key, method
         assert by_key["bundle"].group == "", method
         assert by_key["bundle"].optional is True, method
+
+
+def test_transform_key_explains_and_exemplifies_retain_key_bytes() -> None:
+    spec = FORMS_BY_METHOD[("KeyManagementService", "TransformKey")]
+    fields = {field.key: field for field in spec.fields}
+    assert "template" in fields["retain_key_bytes"].help
+    assert fields["template_id"].help
+    keys = [field.key for field in spec.fields]
+    retain_examples = [example for example in spec.examples if example[keys.index("retain_key_bytes")] is True]
+    assert retain_examples, "a retain-mode example is expected"
+    for example in retain_examples:
+        assert example[keys.index("template_id")], "retain examples must name a target template"
+        assert len(example) == len(keys)

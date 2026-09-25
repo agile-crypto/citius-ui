@@ -31,6 +31,7 @@ class FormField:
     choices: tuple[str, ...] = ()
     optional: bool = False
     group: str = ""
+    help: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +102,7 @@ _SAMPLE_SIGNING_POLICY = json.dumps(
         "allowed_operations": {
             "key_operations": ["create_key", "read_key", "rotate_key", "sign", "verify", "digest_sign", "digest_verify"]
         },
-        "allowed_templates": ["ecdsa-p256-sha256-der", "ml-dsa-65"],
+        "allowed_templates": ["ecdsa-p256-sha256-der", "ecdsa-p256-prehashed-der", "ml-dsa-65"],
     },
     indent=2,
 )
@@ -127,7 +128,12 @@ _SAMPLE_SIGNING_POLICY_V2 = json.dumps(
         "allowed_operations": {
             "key_operations": ["create_key", "read_key", "rotate_key", "sign", "verify", "digest_sign", "digest_verify"]
         },
-        "allowed_templates": ["ecdsa-p256-sha256-der", "ecdsa-p384-sha384-der", "ml-dsa-65"],
+        "allowed_templates": [
+            "ecdsa-p256-sha256-der",
+            "ecdsa-p256-prehashed-der",
+            "ecdsa-p384-sha384-der",
+            "ml-dsa-65",
+        ],
     },
     indent=2,
 )
@@ -384,8 +390,23 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Transform",
         (
             FormField("name", "Key name", placeholder="demo-signing-key"),
-            FormField("template_id", "Template ID", placeholder="ml-dsa-65", optional=True),
-            FormField("retain_key_bytes", "Retain key bytes", kind="bool"),
+            FormField(
+                "template_id",
+                "Template ID",
+                placeholder="ml-dsa-65",
+                optional=True,
+                help="Required when retaining key bytes.",
+            ),
+            FormField(
+                "retain_key_bytes",
+                "Retain key bytes",
+                kind="bool",
+                help=(
+                    "Reuse the current key material in a new version instead of generating a new key. "
+                    "Requires an explicit template with the same key-material family and shape "
+                    "(e.g. ECDSA P-256, RSA-2048, AES-256)."
+                ),
+            ),
             # Same scope-selection surface as CreateKey (shared builders): the
             # TransformKeyRequest proto carries the identical ScopeSpecification.
             # TransformKey has no provider_requirements arm, so those toggles are
@@ -400,6 +421,18 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "ml-dsa-65",
                 False,
                 "SIGNATURE_STANDARD",
+                None,
+                "",
+                "",
+                "",
+                "",
+                "",
+            ),
+            (
+                "demo-signing-key",
+                "ecdsa-p256-prehashed-der",
+                True,
+                "SIGNATURE_PREHASHED",
                 None,
                 "",
                 "",

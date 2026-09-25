@@ -309,16 +309,17 @@ def _render_input(spec: FormField) -> gr.components.Component:
     label = spec.label
     if spec.optional and spec.kind != "bool" and "optional" not in spec.label.lower():
         label = f"{spec.label} (optional)"
+    info = spec.help or None
     if spec.kind == "area":
-        return gr.Textbox(label=label, placeholder=spec.placeholder, lines=6, max_lines=24)
+        return gr.Textbox(label=label, placeholder=spec.placeholder, lines=6, max_lines=24, info=info)
     if spec.kind == "number":
-        return gr.Number(label=label)
+        return gr.Number(label=label, info=info)
     if spec.kind == "bool":
-        return gr.Checkbox(label=label)
+        return gr.Checkbox(label=label, info=info)
     if spec.kind == "dropdown":
         value = spec.choices[0] if (spec.choices and not spec.optional) else None
-        return gr.Dropdown(label=label, choices=list(spec.choices), value=value, allow_custom_value=True)
-    return gr.Textbox(label=label, placeholder=spec.placeholder)
+        return gr.Dropdown(label=label, choices=list(spec.choices), value=value, allow_custom_value=True, info=info)
+    return gr.Textbox(label=label, placeholder=spec.placeholder, info=info)
 
 
 def build_workbench(
