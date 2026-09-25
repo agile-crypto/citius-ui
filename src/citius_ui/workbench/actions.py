@@ -797,11 +797,17 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         return RpcResult(status=ResultStatus.OK, response=_full_response(result.proto))
 
     async def transform_key(request: dict[str, Any]) -> RpcResult:
+        retain_key_bytes = bool(request.get("retain_key_bytes", False))
+        template_id = str(request.get("template_id") or "").strip()
+        if retain_key_bytes and not template_id:
+            # The server requires an explicit, material-compatible target
+            # template to retain key bytes; fail fast with the same meaning.
+            raise RequestError("'template_id' is required when 'retain_key_bytes' is set")
         try:
             built = sdk_keys.transform_key_request(
                 _require_text(request, "name"),
-                retain_key_bytes=bool(request.get("retain_key_bytes", False)),
-                template_id=request.get("template_id", ""),
+                retain_key_bytes=retain_key_bytes,
+                template_id=template_id,
             )
             built.scope_spec.CopyFrom(_key_scope_spec(request))
             result = await clients.key_management.transform_key(built)

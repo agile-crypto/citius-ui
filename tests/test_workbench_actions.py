@@ -419,3 +419,25 @@ def test_full_response_uses_proto_field_names_not_camelcase() -> None:
     assert rendered["message"] == "created"
     assert "key_metadata" in rendered
     assert rendered["key_metadata"]["key_id"] == "kid-1"  # snake_case, not keyId
+
+
+def test_transform_key_retain_bytes_requires_template_id() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    class _NoCallKeyManagement:
+        async def transform_key(self, _request: object) -> object:
+            raise AssertionError("retain without template_id must not reach the server")
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_NoCallKeyManagement()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "TransformKey")
+
+    result = asyncio.run(
+        action.invoke({"name": "demo-signing-key", "retain_key_bytes": True, "scope": "SIGNATURE_STANDARD"})
+    )
+    assert result.status is ResultStatus.INVALID_ARGUMENT
+    assert "'template_id' is required when 'retain_key_bytes' is set" in result.message
