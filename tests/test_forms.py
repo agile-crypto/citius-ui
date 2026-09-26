@@ -81,10 +81,18 @@ def test_create_key_form_exposes_friendly_scope_and_filter_fields() -> None:
     assert {"scope_spec", "provider_requirements"} <= keys
 
 
-def test_digest_forms_expose_hash_algorithm() -> None:
-    for method in ("DigestSign", "DigestVerify"):
-        spec = FORMS_BY_METHOD[("CryptoService", method)]
-        assert "hash_algorithm" in {field.key for field in spec.fields}
+def test_digest_sign_form_exposes_hash_algorithm() -> None:
+    spec = FORMS_BY_METHOD[("CryptoService", "DigestSign")]
+    assert "hash_algorithm" in {field.key for field in spec.fields}
+
+
+def test_digest_verify_form_takes_the_hash_from_metadata() -> None:
+    # The server reads the digest hash from the signature's operation
+    # metadata, so DigestVerify offers no hash field of its own.
+    spec = FORMS_BY_METHOD[("CryptoService", "DigestVerify")]
+    keys = {field.key for field in spec.fields}
+    assert "hash_algorithm" not in keys
+    assert "metadata" in keys
 
 
 def test_create_and_transform_key_share_the_scope_selection_fields() -> None:

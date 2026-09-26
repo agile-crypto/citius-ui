@@ -637,7 +637,6 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 optional=True,
             ),
             FormField("digest", "Digest (base64)", kind="area"),
-            FormField("hash_algorithm", "Hash algorithm", kind="dropdown", choices=_HASH_ALGORITHMS, optional=True),
             FormField(
                 "domain_context",
                 "Domain context (text, must match sign)",
@@ -645,17 +644,18 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 optional=True,
             ),
             FormField("signature", "Signature (base64)", kind="area", group=GROUP_MANUAL),
+            # The metadata carries the digest hash recorded by Digest sign.
             FormField("metadata", "Operation metadata (JSON)", kind="area", group=GROUP_MANUAL),
             FormField(
                 "scope_params",
                 "Scope parameters (JSON, advanced override)",
                 kind="area",
-                placeholder='{"no_context": {}}, optionally with "hash_algorithm": "HASH_ALGORITHM_SHA256"',
+                placeholder='{"no_context": {}} or {"domain_context": {"context": "<base64>"}}',
                 optional=True,
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-digest-key", "<paste Digest sign bundle>", "", "", "", "", "", ""),),
+        examples=(("demo-digest-key", "<paste Digest sign bundle>", "", "", "", "", ""),),
         consumes="Signature",
     ),
 )

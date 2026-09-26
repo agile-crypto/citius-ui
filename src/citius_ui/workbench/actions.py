@@ -397,7 +397,9 @@ def _infer_scope_from_template(request: dict[str, Any]) -> str:
 # full oneof control (e.g. xts_params, vendor_params, user_context).
 
 SIGNATURE_SCOPE_PARAM_KEYS = frozenset({"no_context", "domain_context", "vendor_context", "user_context"})
-DIGEST_SCOPE_PARAM_KEYS = SIGNATURE_SCOPE_PARAM_KEYS | {"hash_algorithm", "hash_algorithm_oid"}
+# DigestSign also declares the digest's hash; DigestVerify reads it from the
+# signature's operation metadata (digest_hash), so it takes the plain set.
+DIGEST_SIGN_SCOPE_PARAM_KEYS = SIGNATURE_SCOPE_PARAM_KEYS | {"hash_algorithm"}
 ENCRYPTION_SCOPE_PARAM_KEYS = frozenset(
     {"no_params", "aead_params", "xts_params", "asymmetric_params", "vendor_params", "user_context"}
 )
@@ -673,7 +675,7 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 context=_signature_context(request),
                 hash_algorithm=_hash_algorithm(request),
             )
-            _finalize_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
+            _finalize_scope_params(built, request, allowed=DIGEST_SIGN_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.digest_sign(built)
         except CitiusError as error:
             return error_result(error)
@@ -696,9 +698,8 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
                 _base64_field(request, "signature"),
                 _metadata_proto(request.get("metadata")),
                 context=_signature_context(request),
-                hash_algorithm=_hash_algorithm(request),
             )
-            _finalize_scope_params(built, request, allowed=DIGEST_SCOPE_PARAM_KEYS, default_arm="no_context")
+            _finalize_scope_params(built, request, allowed=SIGNATURE_SCOPE_PARAM_KEYS, default_arm="no_context")
             result = await clients.crypto.digest_verify(built)
         except CitiusError as error:
             return error_result(error)
