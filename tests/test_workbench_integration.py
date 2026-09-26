@@ -15,6 +15,7 @@ from citius_api.services.crypto_service_pb2_grpc import (
     CryptoServiceServicer,
     add_CryptoServiceServicer_to_server,
 )
+from citius_api.types.algorithm_params_pb2 import HashAlgorithm
 
 from citius_ui.actions.executor import ActionExecutor, ExecutionContext
 from citius_ui.actions.model import ResultStatus
@@ -38,11 +39,16 @@ class FakeCrypto(CryptoServiceServicer):
         return VerifyResponse(valid=valid)
 
     async def DigestSign(self, request, context):  # noqa: N802
+        # Like the server: record the digest's hash in the metadata, which
+        # DigestVerify reads back.
         response = DigestSignResponse(signature=b"digestsig:" + request.digest)
         response.metadata.key_version = 5
+        response.metadata.digest_hash = request.hash_algorithm
         return response
 
     async def DigestVerify(self, request, context):  # noqa: N802
+        if request.metadata.digest_hash != HashAlgorithm.HASH_ALGORITHM_SHA256:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "metadata.digest_hash is required")
         valid = request.signature == b"digestsig:" + request.digest and request.metadata.key_version == 5
         return DigestVerifyResponse(valid=valid)
 
@@ -130,12 +136,15 @@ async def test_digest_sign_bundle_carries_the_digest_for_digest_verify(crypto_en
     sign_result, sign_record = await executor.execute(
         registry.get("CryptoService", "DigestSign"),
         context,
-        {"key_name": "demo-signing-key", "digest": digest},
+        {"key_name": "demo-signing-key", "digest": digest, "hash_algorithm": "SHA256"},
     )
     assert sign_result.status is ResultStatus.OK
     bundle = sign_record.artifacts[0].bundle()
     assert bundle["digest"] == digest
     assert "message" not in bundle
+    # The digest hash must survive the JSON bundle: DigestVerify reads it
+    # from the metadata.
+    assert bundle["metadata"]["digest_hash"] == "HASH_ALGORITHM_SHA256"
 
     # The bundle is exactly what the Workbench's bundle-paste flow hands to
     # DigestVerify (see the bundle-string test below for that path).
@@ -177,7 +186,7 @@ async def test_pasting_a_bundle_string_drives_digest_verify(crypto_endpoint) -> 
     _, sign_record = await executor.execute(
         registry.get("CryptoService", "DigestSign"),
         context,
-        {"key_name": "demo-signing-key", "digest": "8f434346"},
+        {"key_name": "demo-signing-key", "digest": "8f434346", "hash_algorithm": "SHA256"},
     )
     bundle = sign_record.artifacts[0].bundle()
 
