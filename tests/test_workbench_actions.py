@@ -441,3 +441,64 @@ def test_transform_key_retain_bytes_requires_template_id() -> None:
     )
     assert result.status is ResultStatus.INVALID_ARGUMENT
     assert "'template_id' is required when 'retain_key_bytes' is set" in result.message
+
+
+def test_migrate_key_builds_the_request_from_the_form() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_api.messages.key_management_pb2 import MigrateKeyResponse, MigrationStrategy
+    from citius_sdk.services.key_management import MigrateKeyResult
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    sent: list[object] = []
+
+    class _KeyManagement:
+        async def migrate_key(self, request: object) -> MigrateKeyResult:
+            sent.append(request)
+            response = MigrateKeyResponse(success=True, message="migrated")
+            response.result.target_instance_id = "openssl"
+            return MigrateKeyResult(response)
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_KeyManagement()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "MigrateKey")
+    assert action.availability is Availability.AVAILABLE
+
+    result = asyncio.run(
+        action.invoke({"name": "demo-signing-key", "strategy": "REKEY_AND_ARCHIVE", "target_provider_id": "openssl"})
+    )
+    assert result.status is ResultStatus.OK
+    assert result.response["result"]["target_instance_id"] == "openssl"
+    (request,) = sent
+    assert request.strategy == MigrationStrategy.MIGRATION_STRATEGY_REKEY_AND_ARCHIVE  # type: ignore[attr-defined]
+    assert request.provider_target.provider_id == "openssl"  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "message"),
+    [
+        ({"target_instance_id": "openssl"}, "'strategy' is required"),
+        ({"strategy": "TELEPORT", "target_instance_id": "openssl"}, "unknown migration strategy"),
+        ({"strategy": "PROVIDER_SWITCH"}, "exactly one of"),
+    ],
+)
+def test_migrate_key_rejects_bad_input_before_the_server(request_fields: dict[str, str], message: str) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    class _NoCallKeyManagement:
+        async def migrate_key(self, _request: object) -> object:
+            raise AssertionError("invalid input must not reach the server")
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_NoCallKeyManagement()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "MigrateKey")
+    result = asyncio.run(action.invoke({"name": "demo-signing-key", **request_fields}))
+    assert result.status is ResultStatus.INVALID_ARGUMENT
+    assert message in result.message

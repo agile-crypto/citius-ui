@@ -43,7 +43,6 @@ CONTRACT_ONLY: dict[str, list[str]] = {
         "RotateKey",
         "UpdateKeyPolicy",
         "UpdateKeyState",
-        "MigrateKey",
         "ValidateKeyOperation",
         "ExportKey",
         "ImportKey",
@@ -96,6 +95,7 @@ PERMISSION_BY_METHOD: dict[str, str] = {
     "CreateKey": "citius:keys:create",
     "ReadKey": "citius:keys:read",
     "TransformKey": "citius:keys:rotate",
+    "MigrateKey": "citius:keys:rotate",
     "Encrypt": "citius:crypto:encrypt",
     "Decrypt": "citius:crypto:decrypt",
     "Sign": "citius:crypto:sign",
@@ -107,7 +107,7 @@ PERMISSION_BY_METHOD: dict[str, str] = {
 
 IMPLEMENTED: dict[str, list[str]] = {
     "CryptoPolicyService": ["CreateCryptoPolicy", "ReadCryptoPolicy", "UpdateCryptoPolicy"],
-    "KeyManagementService": ["CreateKey", "ReadKey", "TransformKey"],
+    "KeyManagementService": ["CreateKey", "ReadKey", "TransformKey", "MigrateKey"],
     "CryptoService": ["Encrypt", "Decrypt", "Sign", "Verify", "DigestSign", "DigestVerify"],
 }
 
@@ -817,6 +817,28 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
         return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
+    async def migrate_key(request: dict[str, Any]) -> RpcResult:
+        strategy_name = str(request.get("strategy") or "").strip().upper()
+        if not strategy_name:
+            raise RequestError("'strategy' is required")
+        full_name = f"MIGRATION_STRATEGY_{strategy_name.removeprefix('MIGRATION_STRATEGY_')}"
+        try:
+            strategy = sdk_keys.MigrationStrategy.Value(full_name)
+        except ValueError as exc:
+            raise RequestError(f"unknown migration strategy {strategy_name!r}") from exc
+        try:
+            built = sdk_keys.migrate_key_request(
+                _require_text(request, "name"),
+                strategy=strategy,
+                target_instance_id=str(request.get("target_instance_id") or "").strip(),
+                target_provider_id=str(request.get("target_provider_id") or "").strip(),
+            )
+            result = await clients.key_management.migrate_key(built)
+        except CitiusError as error:
+            return error_result(error)
+        status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
+        return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
+
     registry.register(
         RpcAction(
             service="KeyManagementService",
@@ -842,6 +864,15 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             permission=PERMISSION_BY_METHOD["TransformKey"],
             availability=Availability.AVAILABLE,
             invoke=_normalized(transform_key),
+        )
+    )
+    registry.register(
+        RpcAction(
+            service="KeyManagementService",
+            method="MigrateKey",
+            permission=PERMISSION_BY_METHOD["MigrateKey"],
+            availability=Availability.AVAILABLE,
+            invoke=_normalized(migrate_key),
         )
     )
 

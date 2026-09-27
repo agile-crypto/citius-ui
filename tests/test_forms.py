@@ -214,3 +214,15 @@ def test_digest_forms_use_a_prehashed_key_created_by_an_example() -> None:
             template_id, scope = created[example[key_index]]
             assert "prehashed" in template_id
             assert scope == "SIGNATURE_PREHASHED"
+
+
+def test_migrate_key_offers_the_implemented_strategies_with_one_target_per_example() -> None:
+    spec = FORMS_BY_METHOD[("KeyManagementService", "MigrateKey")]
+    fields = {field.key: field for field in spec.fields}
+    assert fields["strategy"].choices == ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
+    keys = [field.key for field in spec.fields]
+    assert {example[keys.index("strategy")] for example in spec.examples} == set(fields["strategy"].choices)
+    for example in spec.examples:
+        assert len(example) == len(keys)
+        targets = [example[keys.index("target_instance_id")], example[keys.index("target_provider_id")]]
+        assert sum(bool(t) for t in targets) == 1, example

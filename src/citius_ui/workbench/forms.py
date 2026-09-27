@@ -90,6 +90,8 @@ _NIST_STATUSES: tuple[str, ...] = ("", *(status.name for status in _sdk.NistStat
 _FIPS_LEVELS: tuple[str, ...] = ("", *(level.name for level in _sdk.Fips140Level))
 _TRISTATE: tuple[str, ...] = ("", "true", "false")
 _HASH_ALGORITHMS: tuple[str, ...] = ("", *(algorithm.name for algorithm in _sdk.HashAlgorithm))
+# The MigrateKey strategies the server implements; the others return Unimplemented.
+_MIGRATION_STRATEGIES: tuple[str, ...] = ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
 
 # Policy documents must match the server's rules_json schema exactly: JSON with
 # version "1", allowed_operations.key_operations using lowercase operation
@@ -463,6 +465,47 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "",
                 "",
             ),
+        ),
+    ),
+    RpcFormSpec(
+        "KeyManagementService",
+        "MigrateKey",
+        "Migrate",
+        (
+            FormField("name", "Key name", placeholder="demo-signing-key"),
+            FormField(
+                "strategy",
+                "Strategy",
+                kind="dropdown",
+                choices=_MIGRATION_STRATEGIES,
+                help=(
+                    "PROVIDER_SWITCH copies the key bytes to the target provider, so data "
+                    "protected before the move keeps working unchanged. REKEY_AND_ARCHIVE "
+                    "generates a new key on the target; the previous version stays on the "
+                    "source provider to decrypt or verify older data."
+                ),
+            ),
+            FormField(
+                "target_instance_id",
+                "Target provider instance",
+                placeholder="openssl",
+                optional=True,
+                help="A registered instance name, e.g. software, openssl, openssl-fips.",
+            ),
+            FormField(
+                "target_provider_id",
+                "Target provider type",
+                placeholder="openssl",
+                optional=True,
+                help=(
+                    "Alternative to an instance: the first other instance of this type "
+                    "that supports the key's template. Set exactly one target."
+                ),
+            ),
+        ),
+        examples=(
+            ("demo-signing-key", "PROVIDER_SWITCH", "openssl", ""),
+            ("demo-signing-key", "REKEY_AND_ARCHIVE", "", "openssl"),
         ),
     ),
     RpcFormSpec(
