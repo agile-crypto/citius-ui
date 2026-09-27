@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import citius_sdk as sdk
+from citius_api.messages.key_management_pb2 import MigrationStrategy
 from citius_api.messages.metadata_pb2 import OperationMetadata as OperationMetadataProto
 from citius_api.types import common_pb2 as common_types
 from citius_api.types import implementation_pb2 as common_impl
@@ -823,7 +824,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
             raise RequestError("'strategy' is required")
         full_name = f"MIGRATION_STRATEGY_{strategy_name.removeprefix('MIGRATION_STRATEGY_')}"
         try:
-            strategy = sdk_keys.MigrationStrategy.Value(full_name)
+            strategy = MigrationStrategy.Value(full_name)
         except ValueError as exc:
             raise RequestError(f"unknown migration strategy {strategy_name!r}") from exc
         try:
