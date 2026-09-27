@@ -374,8 +374,11 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "",
                 "",
             ),
-            # Exercises the filter sections: a quantum-safe, NIST-approved
-            # signing key that must run on a FIPS 140 L3, memory-safe provider.
+            # Exercises the filter sections: a quantum-safe, NIST-approved,
+            # FIPS-approved (FIPS 204) signing key on a memory-safe provider.
+            # fips_approved filters the algorithm; FIPS 140 certification of
+            # the provider is a separate provider requirement, which the
+            # memory-safe software provider cannot meet.
             (
                 "demo-pqc-signing-key",
                 "demo-signing-policy",
@@ -387,12 +390,12 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "APPROVED",
                 "true",
                 "true",
-                True,
-                "LEVEL_3",
+                False,
+                "",
                 True,
                 False,
                 False,
-                True,
+                False,
                 False,
                 "",
                 "",
