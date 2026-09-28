@@ -92,6 +92,16 @@ _TRISTATE: tuple[str, ...] = ("", "true", "false")
 _HASH_ALGORITHMS: tuple[str, ...] = ("", *(algorithm.name for algorithm in _sdk.HashAlgorithm))
 # The MigrateKey strategies the server implements; the others return Unimplemented.
 _MIGRATION_STRATEGIES: tuple[str, ...] = ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
+_LIFECYCLE_STATES: tuple[str, ...] = (
+    "",
+    "PRE_ACTIVE",
+    "ACTIVE",
+    "SUSPENDED",
+    "DEACTIVATED",
+    "COMPROMISED",
+    "DESTROYED",
+    "DESTROYED_COMPROMISED",
+)
 
 # Policy documents must match the server's rules_json schema exactly: JSON with
 # version "1", allowed_operations.key_operations using lowercase operation
@@ -509,6 +519,62 @@ FORMS: tuple[RpcFormSpec, ...] = (
         examples=(
             ("demo-signing-key", "PROVIDER_SWITCH", "openssl", ""),
             ("demo-signing-key", "REKEY_AND_ARCHIVE", "", "openssl"),
+        ),
+    ),
+    RpcFormSpec(
+        "KeyManagementService",
+        "ValidateKeyOperation",
+        "Check migration",
+        (
+            FormField("name", "Key name", placeholder="demo-signing-key"),
+            FormField(
+                "target_instance_id",
+                "Target provider instance",
+                placeholder="openssl",
+                optional=True,
+                help="A registered instance name, e.g. software, openssl, openssl-fips.",
+            ),
+            FormField(
+                "target_provider_id",
+                "Target provider type",
+                placeholder="openssl",
+                optional=True,
+                help="Alternative to an instance. Set exactly one target.",
+            ),
+            FormField(
+                "preferred_strategy",
+                "Preferred strategy",
+                kind="dropdown",
+                choices=("", *_MIGRATION_STRATEGIES),
+                optional=True,
+                help="Nothing changes: every strategy is assessed, with why each would or would not work.",
+            ),
+        ),
+        examples=(
+            ("demo-signing-key", "openssl", "", ""),
+            ("demo-signing-key", "openssl-fips", "", "PROVIDER_SWITCH"),
+        ),
+    ),
+    RpcFormSpec(
+        "KeyManagementService",
+        "ListKeys",
+        "List keys",
+        (
+            FormField("provider_id", "Provider instance", placeholder="openssl", optional=True),
+            FormField("policy", "Policy", placeholder="demo-signing-policy", optional=True),
+            FormField(
+                "lifecycle_state",
+                "Lifecycle state",
+                kind="dropdown",
+                choices=_LIFECYCLE_STATES,
+                optional=True,
+            ),
+            FormField("page_size", "Page size", kind="number", optional=True, help="0 or blank lists every key."),
+            FormField("page_token", "Page token", optional=True, help="The next_page_token of the previous page."),
+        ),
+        examples=(
+            ("", "", "", None, ""),
+            ("openssl", "", "ACTIVE", None, ""),
         ),
     ),
     RpcFormSpec(
