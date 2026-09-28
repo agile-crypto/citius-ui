@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import citius_sdk as _sdk
 
+from citius_ui.workbench.catalogue import PROVIDER_INSTANCES, PROVIDER_TYPES, SCOPES
+
 
 @dataclass(frozen=True, slots=True)
 class FormField:
@@ -22,6 +24,9 @@ class FormField:
     ``group`` places the field inside a collapsible section (added on demand)
     rather than the always-visible core of the form; an empty group means the
     field is a core field shown up front.
+
+    ``choices_from`` names a server catalogue (see ``catalogue``) whose
+    entries replace ``choices`` once the page has read it.
     """
 
     key: str
@@ -32,6 +37,7 @@ class FormField:
     optional: bool = False
     group: str = ""
     help: str = ""
+    choices_from: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +174,8 @@ def _scope_field() -> FormField:
         kind="dropdown",
         choices=_KEY_SCOPES,
         optional=True,
+        choices_from=SCOPES,
+        help="Lists the scopes the server's template catalogue offers.",
     )
 
 
@@ -308,7 +316,14 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("name", "Key name", placeholder="demo-signing-key"),
             FormField("policy", "Policy", placeholder="demo-signing-policy"),
             FormField("template_id", "Template ID", placeholder="ecdsa-p256-sha256-der", optional=True),
-            FormField("provider_id", "Provider ID", placeholder="software", optional=True),
+            FormField(
+                "provider_id",
+                "Provider instance",
+                kind="dropdown",
+                optional=True,
+                choices_from=PROVIDER_INSTANCES,
+                help="Pins the key to this instance; blank lets the server choose.",
+            ),
             # Shared scope-selection surface (also used by TransformKey).
             _scope_field(),
             *_security_property_fields(),
@@ -501,15 +516,17 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField(
                 "target_instance_id",
                 "Target provider instance",
-                placeholder="openssl",
+                kind="dropdown",
                 optional=True,
-                help="A registered instance name, e.g. software, openssl, openssl-fips.",
+                choices_from=PROVIDER_INSTANCES,
+                help="A registered instance, e.g. software, openssl, openssl-fips.",
             ),
             FormField(
                 "target_provider_id",
                 "Target provider type",
-                placeholder="openssl",
+                kind="dropdown",
                 optional=True,
+                choices_from=PROVIDER_TYPES,
                 help=(
                     "Alternative to an instance: the first other instance of this type "
                     "that supports the key's template. Set exactly one target."
@@ -530,15 +547,17 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField(
                 "target_instance_id",
                 "Target provider instance",
-                placeholder="openssl",
+                kind="dropdown",
                 optional=True,
-                help="A registered instance name, e.g. software, openssl, openssl-fips.",
+                choices_from=PROVIDER_INSTANCES,
+                help="A registered instance, e.g. software, openssl, openssl-fips.",
             ),
             FormField(
                 "target_provider_id",
                 "Target provider type",
-                placeholder="openssl",
+                kind="dropdown",
                 optional=True,
+                choices_from=PROVIDER_TYPES,
                 help="Alternative to an instance. Set exactly one target.",
             ),
             FormField(
@@ -560,7 +579,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "ListKeys",
         "List keys",
         (
-            FormField("provider_id", "Provider instance", placeholder="openssl", optional=True),
+            FormField(
+                "provider_id",
+                "Provider instance",
+                kind="dropdown",
+                optional=True,
+                choices_from=PROVIDER_INSTANCES,
+            ),
             FormField("policy", "Policy", placeholder="demo-signing-policy", optional=True),
             FormField(
                 "lifecycle_state",
@@ -782,6 +807,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 kind="dropdown",
                 choices=_KEY_SCOPES,
                 optional=True,
+                choices_from=SCOPES,
                 help="Keeps the templates that offer this scope: the same match CreateKey applies.",
             ),
             FormField(
@@ -840,7 +866,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "ListProviderInstances",
         "List instances",
         (
-            FormField("provider_id", "Provider", placeholder="openssl", optional=True),
+            FormField("provider_id", "Provider", kind="dropdown", optional=True, choices_from=PROVIDER_TYPES),
             FormField("page_size", "Page size", kind="number", optional=True),
             FormField("page_token", "Page token", optional=True),
             *_provider_requirement_fields(),
@@ -851,7 +877,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "ProviderService",
         "GetProviderInstance",
         "Get instance",
-        (FormField("instance_id", "Instance ID", placeholder="openssl"),),
+        (FormField("instance_id", "Instance ID", kind="dropdown", choices_from=PROVIDER_INSTANCES),),
         examples=(("software",), ("openssl",)),
     ),
     RpcFormSpec(
@@ -870,7 +896,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "ProviderService",
         "GetProvider",
         "Get provider",
-        (FormField("provider_id", "Provider ID", placeholder="openssl"),),
+        (FormField("provider_id", "Provider ID", kind="dropdown", choices_from=PROVIDER_TYPES),),
         examples=(("openssl",),),
     ),
 )

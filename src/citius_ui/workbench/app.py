@@ -30,6 +30,7 @@ from citius_ui.grpc_client.client import CitiusClients
 from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
+from citius_ui.workbench.catalogue import choices_for, load_choices
 from citius_ui.workbench.forms import FORMS, FormField, RpcFormSpec, build_request
 
 _AVAILABILITY_BADGE = {
@@ -338,6 +339,8 @@ def build_workbench(
 
     grouped = registry_overview()
     make_provider = token_provider_factory or sessions.token_provider
+    # Dropdowns whose choices come from the server's catalogue, filled on page load.
+    live_fields: list[tuple[FormField, gr.components.Component]] = []
 
     def _run_form(
         spec: RpcFormSpec,
@@ -466,6 +469,7 @@ def build_workbench(
                             outputs=group_inputs,
                         )
             inputs = [components[field.key] for field in spec.fields]
+            live_fields.extend((field, components[field.key]) for field in spec.fields if field.choices_from)
 
             with gr.Row():
                 run = gr.Button(spec.action_label, variant="primary")
@@ -654,5 +658,30 @@ def build_workbench(
             return banner, "\n".join(lines)
 
         blocks.load(_identity, outputs=[identity_banner, permissions_view])
+
+        async def _load_catalogue(request: gr.Request) -> list[Any]:
+            """Offer the session's view of instances, provider types and scopes as choices."""
+            loaded: dict[str, tuple[str, ...]] = {}
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is not None:
+                try:
+                    clients = CitiusClients(config, make_provider(session.id))
+                except Exception:  # noqa: BLE001 - without a client the static choices stay
+                    clients = None
+                if clients is not None:
+                    try:
+                        loaded = await load_choices(clients, {field.choices_from for field, _ in live_fields})
+                    finally:
+                        try:
+                            await clients.close()
+                        except Exception:  # noqa: BLE001 - closing must never break the page
+                            pass
+            return [
+                gr.update(choices=choices_for(field.choices, field.optional, loaded.get(field.choices_from)))
+                for field, _ in live_fields
+            ]
+
+        if live_fields:
+            blocks.load(_load_catalogue, outputs=[component for _, component in live_fields])
 
     return blocks
