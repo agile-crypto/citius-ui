@@ -94,9 +94,9 @@ def test_rows_read_quantum_safety_and_fips_from_the_catalogue_and_instances() ->
 
 def test_unreadable_catalogues_leave_columns_unknown() -> None:
     inv = build_inventory(_views(), None, None)
-    assert inv.unreadable == ("templates", "providers")
+    assert inv.unreadable == {"templates": "not read", "providers": "not read"}
     assert all(r.quantum_safe is None and r.provider_fips_140 is None for r in inv.rows)
-    assert "Not readable by this identity: templates, providers." in render_markdown(inv)
+    assert "Could not read: templates (not read), providers (not read)." in render_markdown(inv)
 
 
 def test_cbom_links_each_key_to_its_algorithm() -> None:
@@ -162,10 +162,17 @@ def test_collect_pages_through_every_key_and_reads_each_template_once() -> None:
     assert keys.tokens == ["", "2"]
     assert len(inv.rows) == 4
     assert set(inv.templates) == set(TEMPLATES)  # the retired template is simply unknown
-    assert inv.unreadable == ()
+    assert inv.unreadable == {}
 
 
 def test_collect_marks_templates_unreadable_when_discovery_is_denied() -> None:
     clients = SimpleNamespace(key_management=_Keys(), discovery=_DeniedDiscovery(), providers=_Providers())
     inv = asyncio.run(collect(clients))
-    assert inv.unreadable == ("templates",)
+    assert inv.unreadable == {"templates": "PERMISSION_DENIED"}
+
+
+def test_cbom_does_not_guess_the_type_of_a_key_whose_template_is_unknown() -> None:
+    inv = build_inventory(_views(), dict(TEMPLATES), None)
+    bom = to_cyclonedx(inv)
+    orphan = next(c for c in bom["components"] if c["bom-ref"] == "key:orphan-key")
+    assert orphan["cryptoProperties"]["relatedCryptoMaterialProperties"]["type"] == "key"

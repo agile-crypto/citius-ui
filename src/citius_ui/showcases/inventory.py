@@ -9,8 +9,9 @@ The inventory joins three read-only listings the server already offers:
 - ListProviderInstances: the FIPS 140 level each instance reports.
 
 Nothing here decides anything: quantum safety and FIPS approval are read from
-the catalogue, the FIPS level from the instance. A template or instance the
-session cannot read leaves its columns unknown (None), not guessed.
+the catalogue, the FIPS level from the instance. A template or instance that
+could not be read leaves its columns unknown (None), not guessed; the report
+names the status code that refused it.
 
 The same data is exported as a CycloneDX 1.6 CBOM: one ``algorithm`` asset per
 template in use and one ``related-crypto-material`` asset per key, linked by
@@ -77,7 +78,7 @@ class InventoryRow:
 class Inventory:
     rows: tuple[InventoryRow, ...]
     templates: dict[str, Any]  # template_id -> TemplateInfo, for those the session could read
-    unreadable: tuple[str, ...]  # catalogues the session could not read, e.g. "templates", "providers"
+    unreadable: dict[str, str]  # catalogue ("templates", "providers") -> the status code that refused it
     truncated: bool
 
     def summary(self) -> dict[str, Any]:
@@ -120,10 +121,19 @@ def build_inventory(
     templates: dict[str, Any] | None,
     instances: dict[str, Any] | None,
     *,
+    reasons: dict[str, str] | None = None,
     truncated: bool = False,
 ) -> Inventory:
-    """Join keys with template and instance data; None for a catalogue means unreadable."""
-    unreadable = tuple(name for name, data in (("templates", templates), ("providers", instances)) if data is None)
+    """Join keys with template and instance data; None for a catalogue means it was not read.
+
+    ``reasons`` names the status code that refused each unread catalogue.
+    """
+    reasons = reasons or {}
+    unreadable = {
+        name: reasons.get(name, "not read")
+        for name, data in (("templates", templates), ("providers", instances))
+        if data is None
+    }
     templates = templates or {}
     instances = instances or {}
     rows = []
@@ -178,22 +188,30 @@ async def collect(clients: Any) -> Inventory:
 
     read: dict[str, Any] = {}
     templates: dict[str, Any] | None = read
+    reasons: dict[str, str] = {}
     for template_id in sorted({k.template_id for k in keys if k.template_id}):
         try:
             read[template_id] = await clients.discovery.get_template(template_id)
         except NotFoundError:
             continue  # a key on a template the catalogue no longer has: its columns stay unknown
-        except CitiusError:
+        except CitiusError as error:
             templates = None
+            reasons["templates"] = _code(error)
             break
 
     instances: dict[str, Any] | None
     try:
         listed = await clients.providers.list_provider_instances()
         instances = {i.instance_id: i for i in listed.instances}
-    except CitiusError:
+    except CitiusError as error:
         instances = None
-    return build_inventory(keys, templates, instances, truncated=truncated)
+        reasons["providers"] = _code(error)
+    return build_inventory(keys, templates, instances, reasons=reasons, truncated=truncated)
+
+
+def _code(error: CitiusError) -> str:
+    code = getattr(error, "code", None)
+    return code.name if code is not None else type(error).__name__
 
 
 def _algorithm_component(template_id: str, template: Any) -> dict[str, Any]:
@@ -243,10 +261,13 @@ def to_cyclonedx(
     dependencies = []
     for row in inventory.rows:
         template = inventory.templates.get(row.template_id)
-        primitive = template.cyclonedx.primitive if template is not None else ""
-        material: dict[str, Any] = {
-            "type": "private-key" if primitive in _ASYMMETRIC_PRIMITIVES else "secret-key",
-        }
+        if template is None:
+            key_type = "key"  # without the template, the kind of key is not known
+        elif template.cyclonedx.primitive in _ASYMMETRIC_PRIMITIVES:
+            key_type = "private-key"
+        else:
+            key_type = "secret-key"
+        material: dict[str, Any] = {"type": key_type}
         state = _CYCLONEDX_STATE.get(row.lifecycle_state)
         if state:
             material["state"] = state
@@ -299,9 +320,10 @@ def render_markdown(inventory: Inventory) -> str:
         f"quantum-safe and FIPS **{s['quantum_safe_and_fips']}**",
     ]
     if s["unknown"]:
-        lines.append(f"{s['unknown']} key(s) have a template this identity cannot read; their columns are unknown.")
+        lines.append(f"{s['unknown']} key(s) have a template that could not be read; their columns are unknown.")
     if inventory.unreadable:
-        lines.append(f"Not readable by this identity: {', '.join(inventory.unreadable)}.")
+        refused = ", ".join(f"{name} ({code})" for name, code in inventory.unreadable.items())
+        lines.append(f"Could not read: {refused}.")
     if inventory.truncated:
         lines.append(f"Only the first {_PAGE_SIZE * _MAX_PAGES} keys are listed.")
     return "\n\n".join(lines)
