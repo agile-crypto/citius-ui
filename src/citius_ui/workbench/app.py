@@ -36,10 +36,12 @@ from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.showcases.inventory import collect as collect_inventory
 from citius_ui.showcases.inventory import render_markdown as render_inventory
 from citius_ui.showcases.inventory import to_cyclonedx
+from citius_ui.showcases.model import Runbook
+from citius_ui.showcases.replay import form_values
 from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
 from citius_ui.workbench.catalogue import choices_for, load_choices
-from citius_ui.workbench.forms import FORMS, FormField, RpcFormSpec, build_request
+from citius_ui.workbench.forms import FORMS, FORMS_BY_METHOD, FormField, RpcFormSpec, build_request
 
 _AVAILABILITY_BADGE = {
     Availability.AVAILABLE: "Available",
@@ -73,6 +75,9 @@ _INVENTORY_COLUMNS = (
     "fips_ready",
     "lifecycle_state",
 )
+
+# The Workbench tab's id, so a runbook step can switch to it.
+_WORKBENCH_TAB = "workbench"
 
 # Service -> accent class, for the services with at least one implemented RPC
 # (the rest render as an unaccented, muted card).
@@ -364,6 +369,10 @@ def build_workbench(
     make_provider = token_provider_factory or sessions.token_provider
     # Dropdowns whose choices come from the server's catalogue, filled on page load.
     live_fields: list[tuple[FormField, gr.components.Component]] = []
+    # Per RPC, its form inputs in field order; per service, its card and method
+    # dropdown. Runbook steps prefill through these.
+    form_inputs: dict[tuple[str, str], list[gr.components.Component]] = {}
+    service_cards: dict[str, tuple[gr.Accordion, gr.Dropdown]] = {}
 
     def _run_form(
         spec: RpcFormSpec,
@@ -492,6 +501,7 @@ def build_workbench(
                             outputs=group_inputs,
                         )
             inputs = [components[field.key] for field in spec.fields]
+            form_inputs[(spec.service, spec.method)] = inputs
             live_fields.extend((field, components[field.key]) for field in spec.fields if field.choices_from)
 
             with gr.Row():
@@ -585,12 +595,13 @@ def build_workbench(
         label = SERVICE_LABELS.get(service, service)
         accent = _ACCENT_BY_SERVICE.get(service)
         card_classes = ["svc-card", accent] if accent else ["svc-card"]
-        with gr.Accordion(f"{label} · {service}", open=open_by_default, elem_classes=card_classes):
+        with gr.Accordion(f"{label} · {service}", open=open_by_default, elem_classes=card_classes) as card:
             span_toggle_id = f"span-toggle-{service}"
             span_toggle = gr.Button(_SPAN_TWO_LABEL, elem_id=span_toggle_id, elem_classes=["span-toggle-btn"])
             span_toggle.click(None, js=_span_toggle_js(span_toggle_id))
             with gr.Column(elem_classes=["method-zone"]):
                 method = gr.Dropdown(choices=[form.method for form in forms], value=forms[0].method, label="Method")
+            service_cards[service] = (card, method)
             bodies = [_render_rpc_body(form, visible=(index == 0)) for index, form in enumerate(forms)]
             method.change(
                 lambda selected, _forms=forms: [gr.update(visible=(f.method == selected)) for f in _forms],
@@ -615,6 +626,50 @@ def build_workbench(
                     gr.Markdown(
                         "\n".join(f"- `{method_name}` — {_AVAILABILITY_BADGE[avail]}" for method_name, avail in pending)
                     )
+
+    def _render_prefill(runbook: Runbook, tabs: gr.Tabs) -> None:
+        """A step picker whose Prefill button loads the step's request into the Workbench.
+
+        It switches to the Workbench tab, opens the step's service card,
+        selects its method, and sets its form. Only RPCs with a form can be
+        prefilled; the outputs are fixed when the page is built, so they cover
+        every card and form the runbook uses.
+        """
+        steps = [step for step in runbook.steps if (step.service, step.method) in form_inputs]
+        if not steps:
+            return
+        labels = [f"{runbook.steps.index(step) + 1}. {step.persona} · {step.title}" for step in steps]
+        services = sorted({step.service for step in steps})
+        rpcs = sorted({(step.service, step.method) for step in steps})
+        outputs: list[Any] = [tabs]
+        for service in services:
+            outputs.extend(service_cards[service])
+        for rpc in rpcs:
+            outputs.extend(form_inputs[rpc])
+        with gr.Row():
+            picker = gr.Dropdown(choices=labels, value=labels[0], label="Step", scale=4)
+            prefill = gr.Button("Prefill in Workbench", variant="secondary", scale=1)
+
+        def _prefill(label: str) -> list[Any]:
+            step = steps[labels.index(label)] if label in labels else steps[0]
+            updates: list[Any] = [gr.Tabs(selected=_WORKBENCH_TAB)]
+            for service in services:
+                if service == step.service:
+                    updates += [gr.update(open=True), gr.update(value=step.method)]
+                else:
+                    updates += [gr.update(), gr.update()]
+            for rpc in rpcs:
+                spec = FORMS_BY_METHOD[rpc]
+                if rpc != (step.service, step.method):
+                    updates += [gr.update() for _ in spec.fields]
+                    continue
+                for field, value in zip(spec.fields, form_values(step), strict=True):
+                    if value is None and field.kind == "bool":
+                        value = False
+                    updates.append(gr.update(value=value))
+            return updates
+
+        prefill.click(_prefill, inputs=picker, outputs=outputs)
 
     def _render_unavailable_card(service: str) -> None:
         """Render a muted, still-expandable card listing a service's contract RPCs.
@@ -660,8 +715,8 @@ def build_workbench(
         def _resolver(service: str, method: str) -> Availability:
             return availability.get((service, method), Availability.UNKNOWN)
 
-        with gr.Tabs():
-            with gr.Tab("API Workbench"):
+        with gr.Tabs() as tabs:
+            with gr.Tab("API Workbench", id=_WORKBENCH_TAB):
                 with gr.Column(elem_classes=["workbench-grid"]):
                     for service in _ordered_services(grouped):
                         if _forms_for(service):
@@ -690,11 +745,13 @@ def build_workbench(
                     gr.Markdown(
                         "Guidance over the same Workbench RPCs. Each step names the browser "
                         "identity to use and the expected outcome; only safe bundles cross "
-                        "browsers, never tokens."
+                        "browsers, never tokens. Pick a step and **Prefill** to load its request "
+                        "into the Workbench; for a consumer step, paste the named bundle there."
                     )
                     for runbook in RUNBOOKS:
                         with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]):
                             gr.Markdown(render_markdown(runbook, _resolver))
+                            _render_prefill(runbook, tabs)
 
         def _identity(request: gr.Request) -> tuple[str, str]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
