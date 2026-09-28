@@ -551,18 +551,24 @@ def _mock_migration(state: dict[str, Any], method: str, request: dict[str, Any])
     state["keys"][name]["provider"] = target
     after = copy.deepcopy(state["keys"][name])
     state["key_versions"].setdefault(name, {})[str(after["version"])] = copy.deepcopy(after)
-    return _ok(
-        {
-            "success": True,
-            "key_metadata": after,
-            "result": {
-                "strategy_used": f"MIGRATION_STRATEGY_{strategy}",
-                "key_bytes_preserved": strategy == "PROVIDER_SWITCH",
-                "source_instance_id": source,
-                "target_instance_id": target,
-            },
-        }
-    )
+    response: dict[str, Any] = {
+        "success": True,
+        "key_metadata": after,
+        "result": {
+            "strategy_used": f"MIGRATION_STRATEGY_{strategy}",
+            "key_bytes_preserved": strategy == "PROVIDER_SWITCH",
+            "source_instance_id": source,
+            "target_instance_id": target,
+            # Each mock instance is the only instance of its provider type.
+            "source_provider_id": source,
+            "target_provider_id": target,
+        },
+    }
+    if strategy == "REKEY_AND_ARCHIVE":
+        # Like core: the archived version keeps the key's name and is
+        # addressed by version on its old provider.
+        response["archived_key_info"] = {"archived_key_name": name, "provider_id": source}
+    return _ok(response)
 
 
 def _dispatch(state: dict[str, Any], service: str, method: str, request: dict[str, Any]) -> dict[str, Any]:

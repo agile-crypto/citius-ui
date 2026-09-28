@@ -237,12 +237,30 @@ def test_migrate_key_moves_the_key_and_records_a_version():
     assert moved["status"] == "OK"
     assert moved["response"]["key_metadata"]["provider"] == "openssl"
     assert moved["response"]["result"]["key_bytes_preserved"] is True
+    assert "archived_key_info" not in moved["response"]
     assert state["keys"]["demo-signing-key"]["version"] == 2
 
     _, again = execute(
         state, "CISO", "KeyManagementService", "MigrateKey", request_example("KeyManagementService", "MigrateKey")
     )
     assert again["status"] == "FAILED_PRECONDITION"
+
+
+def test_rekey_and_archive_reports_the_archived_version():
+    state, moved = execute(
+        _mock_with_key(),
+        "CISO",
+        "KeyManagementService",
+        "MigrateKey",
+        {"name": "demo-signing-key", "strategy": "REKEY_AND_ARCHIVE", "target_instance_id": "openssl"},
+    )
+    assert moved["status"] == "OK"
+    assert moved["response"]["result"]["key_bytes_preserved"] is False
+    assert moved["response"]["result"]["source_provider_id"] == "software"
+    assert moved["response"]["archived_key_info"] == {
+        "archived_key_name": "demo-signing-key",
+        "provider_id": "software",
+    }
 
 
 def test_migrate_key_refuses_unknown_targets_and_strategies():
