@@ -143,6 +143,9 @@ IMPLEMENTED = {
     ("KeyManagementService", "CreateKey"),
     ("KeyManagementService", "ReadKey"),
     ("KeyManagementService", "TransformKey"),
+    ("KeyManagementService", "MigrateKey"),
+    ("KeyManagementService", "ValidateKeyOperation"),
+    ("KeyManagementService", "ListKeys"),
     ("CryptoService", "Encrypt"),
     ("CryptoService", "Decrypt"),
     ("CryptoService", "Sign"),
@@ -219,6 +222,16 @@ REQUEST_EXAMPLES: dict[tuple[str, str], dict[str, Any]] = {
         "retain_key_bytes": False,
         "template_id": "ml-dsa-65",
     },
+    ("KeyManagementService", "MigrateKey"): {
+        "name": "demo-signing-key",
+        "strategy": "PROVIDER_SWITCH",
+        "target_instance_id": "openssl",
+    },
+    ("KeyManagementService", "ValidateKeyOperation"): {
+        "name": "demo-signing-key",
+        "target_instance_id": "openssl",
+    },
+    ("KeyManagementService", "ListKeys"): {},
     ("CryptoService", "Sign"): {"key_name": "demo-signing-key", "message": "Hello from Citius"},
     ("CryptoService", "Verify"): {
         "key_name": "demo-signing-key",
@@ -335,6 +348,11 @@ def execute(
         result = _error("UNIMPLEMENTED", f"{service}.{method} is defined but not implemented", "server")
     else:
         result = _dispatch(state, service, method, request)
+        if method == "ListKeys" and result["status"] == "OK":
+            # Like the server: keys the persona may not read are left out.
+            result["response"]["keys"] = [
+                k for k in result["response"]["keys"] if not _resource_denied(persona_name, service, k["name"], "")
+            ]
 
     _record(state, persona_name, service, method, request, result, scenario_run_id)
     return state, result
@@ -503,6 +521,50 @@ def _resource_denied(persona_name: str, service: str, key_name: str, policy_name
     return not any(fnmatchcase(candidate, pattern) for pattern in persona["allow"])
 
 
+_MOCK_INSTANCES = ("software", "openssl")
+_MOCK_STRATEGIES = ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
+
+
+def _mock_migration(state: dict[str, Any], method: str, request: dict[str, Any]) -> dict[str, Any]:
+    """Mock MigrateKey and its side-effect-free check, over the two in-process instances."""
+    name = str(request.get("name", ""))
+    if name not in state["keys"]:
+        return _error("NOT_FOUND", f"key {name!r} not found", "storage")
+    target = str(request.get("target_instance_id") or request.get("target_provider_id") or "")
+    source = state["keys"][name]["provider"]
+    if target not in _MOCK_INSTANCES:
+        return _error("NOT_FOUND", f"no provider instance {target!r}", "provider")
+    if target == source:
+        return _error("FAILED_PRECONDITION", f"key is already on provider instance {source!r}", "provider")
+    if method == "ValidateKeyOperation":
+        return _ok(
+            {
+                "current_state": {"instance_id": source, "template_id": state["keys"][name]["template_id"]},
+                "options": [{"strategy": f"MIGRATION_STRATEGY_{s}", "feasible": True} for s in _MOCK_STRATEGIES],
+                "recommended_strategy": "MIGRATION_STRATEGY_PROVIDER_SWITCH",
+            }
+        )
+    strategy = str(request.get("strategy", "")).upper().removeprefix("MIGRATION_STRATEGY_")
+    if strategy not in _MOCK_STRATEGIES:
+        return _error("UNIMPLEMENTED", f"migration strategy {strategy!r} is not implemented", "server")
+    state["keys"][name]["version"] += 1
+    state["keys"][name]["provider"] = target
+    after = copy.deepcopy(state["keys"][name])
+    state["key_versions"].setdefault(name, {})[str(after["version"])] = copy.deepcopy(after)
+    return _ok(
+        {
+            "success": True,
+            "key_metadata": after,
+            "result": {
+                "strategy_used": f"MIGRATION_STRATEGY_{strategy}",
+                "key_bytes_preserved": strategy == "PROVIDER_SWITCH",
+                "source_instance_id": source,
+                "target_instance_id": target,
+            },
+        }
+    )
+
+
 def _dispatch(state: dict[str, Any], service: str, method: str, request: dict[str, Any]) -> dict[str, Any]:
     if method in {"CreateCryptoPolicy", "UpdateCryptoPolicy"}:
         name = str(request.get("name", ""))
@@ -559,6 +621,13 @@ def _dispatch(state: dict[str, Any], service: str, method: str, request: dict[st
         after = copy.deepcopy(state["keys"][name])
         state["key_versions"].setdefault(name, {})[str(after["version"])] = copy.deepcopy(after)
         return _ok({"success": True, "before": before, "after": after})
+
+    if method == "ListKeys":
+        keys = [copy.deepcopy(state["keys"][name]) for name in sorted(state["keys"])]
+        return _ok({"keys": keys, "next_page_token": ""})
+
+    if method in {"MigrateKey", "ValidateKeyOperation"}:
+        return _mock_migration(state, method, request)
 
     if method in {"Sign", "DigestSign"}:
         key = str(request.get("key_name", ""))

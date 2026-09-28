@@ -5,6 +5,7 @@ from citius_ui.mock_engine import (
     history_rows,
     initial_state,
     producer_response_rows,
+    request_example,
     run_scenario_step,
 )
 
@@ -201,3 +202,73 @@ def test_producer_response_history_appends_key_name_and_complete_metadata_bundle
     assert '"key_version": 3' in rows[0][5]
     assert signed["response"]["signature"] in rows[0][5]
     assert encrypted["response"]["ciphertext"] in rows[1][5]
+
+
+def _mock_with_key(persona: str = "CISO") -> dict:
+    state = initial_state()
+    state, _ = execute(
+        state,
+        persona,
+        "CryptoPolicyService",
+        "CreateCryptoPolicy",
+        request_example("CryptoPolicyService", "CreateCryptoPolicy"),
+    )
+    state, _ = execute(
+        state, persona, "KeyManagementService", "CreateKey", request_example("KeyManagementService", "CreateKey")
+    )
+    return state
+
+
+def test_migrate_key_moves_the_key_and_records_a_version():
+    state = _mock_with_key()
+    state, check = execute(
+        state,
+        "CISO",
+        "KeyManagementService",
+        "ValidateKeyOperation",
+        {"name": "demo-signing-key", "target_instance_id": "openssl"},
+    )
+    assert check["status"] == "OK"
+    assert check["response"]["recommended_strategy"] == "MIGRATION_STRATEGY_PROVIDER_SWITCH"
+
+    state, moved = execute(
+        state, "CISO", "KeyManagementService", "MigrateKey", request_example("KeyManagementService", "MigrateKey")
+    )
+    assert moved["status"] == "OK"
+    assert moved["response"]["key_metadata"]["provider"] == "openssl"
+    assert moved["response"]["result"]["key_bytes_preserved"] is True
+    assert state["keys"]["demo-signing-key"]["version"] == 2
+
+    _, again = execute(
+        state, "CISO", "KeyManagementService", "MigrateKey", request_example("KeyManagementService", "MigrateKey")
+    )
+    assert again["status"] == "FAILED_PRECONDITION"
+
+
+def test_migrate_key_refuses_unknown_targets_and_strategies():
+    state = _mock_with_key()
+    _, unknown = execute(
+        state,
+        "CISO",
+        "KeyManagementService",
+        "MigrateKey",
+        {"name": "demo-signing-key", "strategy": "PROVIDER_SWITCH", "target_instance_id": "hsm"},
+    )
+    assert unknown["status"] == "NOT_FOUND"
+    _, strategy = execute(
+        state,
+        "CISO",
+        "KeyManagementService",
+        "MigrateKey",
+        {"name": "demo-signing-key", "strategy": "WRAPPED_TRANSFER", "target_instance_id": "openssl"},
+    )
+    assert strategy["status"] == "UNIMPLEMENTED"
+
+
+def test_list_keys_leaves_out_keys_the_persona_may_not_read():
+    state = _mock_with_key()
+    # CISO may read demo-* keys only.
+    state["keys"]["prod-signing-key"] = dict(state["keys"]["demo-signing-key"], name="prod-signing-key")
+    _, listed = execute(state, "CISO", "KeyManagementService", "ListKeys", {})
+    assert listed["status"] == "OK"
+    assert [k["name"] for k in listed["response"]["keys"]] == ["demo-signing-key"]
