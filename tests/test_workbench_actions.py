@@ -459,7 +459,15 @@ def test_migrate_key_builds_the_request_from_the_form() -> None:
         async def migrate_key(self, request: object) -> MigrateKeyResult:
             sent.append(request)
             response = MigrateKeyResponse(success=True, message="migrated")
+            response.key_metadata.version = 2
             response.result.target_instance_id = "openssl"
+            response.result.target_provider_id = "openssl"
+            response.result.source_instance_id = "software"
+            response.result.strategy_used = MigrationStrategy.MIGRATION_STRATEGY_REKEY_AND_ARCHIVE
+            response.result.target_implementation.fips_140.certified = True
+            response.result.target_implementation.fips_140.level = 1
+            response.archived_key_info.archived_key_name = "demo-signing-key@1"
+            response.archived_key_info.provider_id = "software"
             return MigrateKeyResult(response)
 
     registry = ActionRegistry()
@@ -471,7 +479,14 @@ def test_migrate_key_builds_the_request_from_the_form() -> None:
         action.invoke({"name": "demo-signing-key", "strategy": "REKEY_AND_ARCHIVE", "target_provider_id": "openssl"})
     )
     assert result.status is ResultStatus.OK
-    assert result.response["result"]["target_instance_id"] == "openssl"
+    assert result.response["full_response"]["result"]["target_instance_id"] == "openssl"
+    migration = result.response["migration"]
+    assert migration["strategy_used"] == "MIGRATION_STRATEGY_REKEY_AND_ARCHIVE"
+    assert migration["source"]["instance_id"] == "software"
+    assert migration["target"]["instance_id"] == "openssl"
+    assert migration["target"]["implementation"]["fips_140"] == "FIPS_140_LEVEL_1"
+    assert migration["new_version"] == 2
+    assert migration["archived"] == {"key_name": "demo-signing-key@1", "provider": "software"}
     (request,) = sent
     assert request.strategy == MigrationStrategy.MIGRATION_STRATEGY_REKEY_AND_ARCHIVE  # type: ignore[attr-defined]
     assert request.provider_target.provider_id == "openssl"  # type: ignore[attr-defined]

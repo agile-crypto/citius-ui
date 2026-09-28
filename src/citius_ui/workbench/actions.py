@@ -842,6 +842,28 @@ def _key_summary(view: sdk_keys.KeyMetadataView) -> dict[str, Any]:
     }
 
 
+def _migration_summary(result: sdk_keys.MigrateKeyResult) -> dict[str, Any]:
+    """What a migration did: the strategy, where the key went, and what was archived."""
+    implementation = result.target_implementation
+    metadata = result.key_metadata
+    return {
+        "strategy_used": MigrationStrategy.Name(result.strategy_used),
+        "key_bytes_preserved": result.key_bytes_preserved,
+        "source": {"instance_id": result.source_instance_id, "provider": result.source_provider_id},
+        "target": {
+            "instance_id": result.target_instance_id,
+            "provider": result.target_provider_id,
+            "implementation": _implementation_summary(implementation) if implementation is not None else None,
+        },
+        "new_version": metadata.version if metadata is not None else None,
+        "archived": (
+            {"key_name": result.archived_key_name, "provider": result.archived_provider_id}
+            if result.archived_key_name is not None
+            else None
+        ),
+    }
+
+
 def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def create_key(request: dict[str, Any]) -> RpcResult:
         try:
@@ -905,7 +927,11 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         except CitiusError as error:
             return error_result(error)
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
-        return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
+        return RpcResult(
+            status=status,
+            message=result.message,
+            response={"migration": _migration_summary(result), "full_response": _full_response(result.proto)},
+        )
 
     async def list_keys(request: dict[str, Any]) -> RpcResult:
         try:
