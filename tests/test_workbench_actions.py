@@ -502,3 +502,154 @@ def test_migrate_key_rejects_bad_input_before_the_server(request_fields: dict[st
     result = asyncio.run(action.invoke({"name": "demo-signing-key", **request_fields}))
     assert result.status is ResultStatus.INVALID_ARGUMENT
     assert message in result.message
+
+
+def test_list_keys_summarizes_the_inventory() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_api.messages.key_management_pb2 import ListKeysResponse
+    from citius_api.types.common_pb2 import KeyLifecycleState, KeyOrigin
+    from citius_sdk.services.key_management import ListKeysResult
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    sent: list[object] = []
+
+    class _KeyManagement:
+        async def list_keys(self, request: object) -> ListKeysResult:
+            sent.append(request)
+            response = ListKeysResponse(next_page_token="1")
+            response.keys.add(
+                name="demo-signing-key",
+                version=2,
+                provider="openssl",
+                extractable=True,
+                lifecycle_state=KeyLifecycleState.KEY_LIFECYCLE_STATE_ACTIVE,
+                origin=KeyOrigin.KEY_ORIGIN_GENERATED,
+            )
+            return ListKeysResult(response)
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_KeyManagement()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "ListKeys")
+    assert action.availability is Availability.AVAILABLE
+    assert action.invoke is not None
+
+    result = asyncio.run(action.invoke({"provider_id": "openssl", "lifecycle_state": "ACTIVE", "page_size": 1}))
+    assert result.status is ResultStatus.OK
+    assert result.response["next_page_token"] == "1"
+    (row,) = result.response["keys"]
+    assert row["provider"] == "openssl"
+    assert row["lifecycle_state"] == "KEY_LIFECYCLE_STATE_ACTIVE"
+    assert row["origin"] == "KEY_ORIGIN_GENERATED"
+    (request,) = sent
+    assert request.provider_id == "openssl"  # type: ignore[attr-defined]
+    assert request.lifecycle_state == KeyLifecycleState.KEY_LIFECYCLE_STATE_ACTIVE  # type: ignore[attr-defined]
+    assert request.page_size == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "message"),
+    [
+        ({"lifecycle_state": "HALF_ALIVE"}, "unknown lifecycle state"),
+        ({"page_size": -3}, "must not be negative"),
+        ({"page_size": "many"}, "whole number"),
+    ],
+)
+def test_list_keys_rejects_bad_input_before_the_server(request_fields: dict[str, object], message: str) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    class _NoCall:
+        async def list_keys(self, _request: object) -> object:
+            raise AssertionError("invalid input must not reach the server")
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_NoCall()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "ListKeys")
+    assert action.invoke is not None
+    result = asyncio.run(action.invoke(request_fields))
+    assert result.status is ResultStatus.INVALID_ARGUMENT
+    assert message in result.message
+
+
+def test_validate_key_operation_explains_each_strategy() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_api.messages.key_management_pb2 import MigrationStrategy, ValidateKeyOperationResponse
+    from citius_sdk.services.key_management import ValidateKeyOperationResult
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    sent: list[object] = []
+
+    class _KeyManagement:
+        async def validate_key_operation(self, request: object) -> ValidateKeyOperationResult:
+            sent.append(request)
+            response = ValidateKeyOperationResponse(
+                recommended_strategy=MigrationStrategy.MIGRATION_STRATEGY_PROVIDER_SWITCH,
+                recommendation_reason="keeps the key bytes",
+            )
+            response.current_state.instance_id = "software"
+            response.options.add(strategy=MigrationStrategy.MIGRATION_STRATEGY_PROVIDER_SWITCH, feasible=True)
+            response.options.add(
+                strategy=MigrationStrategy.MIGRATION_STRATEGY_WRAPPED_TRANSFER,
+                feasible=False,
+                infeasibility_reason="no provider wraps",
+            )
+            return ValidateKeyOperationResult(response)
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_KeyManagement()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "ValidateKeyOperation")
+    assert action.invoke is not None
+
+    result = asyncio.run(
+        action.invoke(
+            {"name": "demo-signing-key", "target_instance_id": "openssl", "preferred_strategy": "PROVIDER_SWITCH"}
+        )
+    )
+    assert result.status is ResultStatus.OK
+    assert result.message == "recommended: MIGRATION_STRATEGY_PROVIDER_SWITCH"
+    assert result.response["current"]["instance_id"] == "software"
+    switch, wrapped = result.response["options"]
+    assert switch["feasible"] is True
+    assert wrapped == {
+        "strategy": "MIGRATION_STRATEGY_WRAPPED_TRANSFER",
+        "feasible": False,
+        "why_not": "no provider wraps",
+        "security_notes": [],
+    }
+    (request,) = sent
+    assert request.migrate.target_instance_id == "openssl"  # type: ignore[attr-defined]
+    assert request.migrate.preferred_strategy == MigrationStrategy.MIGRATION_STRATEGY_PROVIDER_SWITCH  # type: ignore[attr-defined]
+
+
+def test_validate_key_operation_without_a_feasible_strategy_says_so() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from citius_api.messages.key_management_pb2 import ValidateKeyOperationResponse
+    from citius_sdk.services.key_management import ValidateKeyOperationResult
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    class _KeyManagement:
+        async def validate_key_operation(self, _request: object) -> ValidateKeyOperationResult:
+            return ValidateKeyOperationResult(ValidateKeyOperationResponse())
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=_KeyManagement()))  # type: ignore[arg-type]
+    action = registry.get("KeyManagementService", "ValidateKeyOperation")
+    assert action.invoke is not None
+    result = asyncio.run(action.invoke({"name": "k", "target_provider_id": "hsm"}))
+    assert result.status is ResultStatus.OK
+    assert result.message == "no strategy is feasible"

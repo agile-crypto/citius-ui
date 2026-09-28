@@ -39,12 +39,10 @@ from citius_ui.grpc_client.serialization import (
 
 CONTRACT_ONLY: dict[str, list[str]] = {
     "KeyManagementService": [
-        "ListKeys",
         "DeleteKey",
         "RotateKey",
         "UpdateKeyPolicy",
         "UpdateKeyState",
-        "ValidateKeyOperation",
         "ExportKey",
         "ImportKey",
     ],
@@ -95,6 +93,8 @@ PERMISSION_BY_METHOD: dict[str, str] = {
     "UpdateCryptoPolicy": "citius:policy:write",
     "CreateKey": "citius:keys:create",
     "ReadKey": "citius:keys:read",
+    "ListKeys": "citius:keys:read",
+    "ValidateKeyOperation": "citius:keys:read",
     "TransformKey": "citius:keys:rotate",
     "MigrateKey": "citius:keys:rotate",
     "Encrypt": "citius:crypto:encrypt",
@@ -108,7 +108,14 @@ PERMISSION_BY_METHOD: dict[str, str] = {
 
 IMPLEMENTED: dict[str, list[str]] = {
     "CryptoPolicyService": ["CreateCryptoPolicy", "ReadCryptoPolicy", "UpdateCryptoPolicy"],
-    "KeyManagementService": ["CreateKey", "ReadKey", "TransformKey", "MigrateKey"],
+    "KeyManagementService": [
+        "CreateKey",
+        "ReadKey",
+        "ListKeys",
+        "TransformKey",
+        "MigrateKey",
+        "ValidateKeyOperation",
+    ],
     "CryptoService": ["Encrypt", "Decrypt", "Sign", "Verify", "DigestSign", "DigestVerify"],
 }
 
@@ -768,6 +775,59 @@ def _register_crypto(registry: ActionRegistry, clients: CitiusClients) -> None:
     )
 
 
+def _migration_strategy(request: dict[str, Any], key: str, *, required: bool) -> Any:
+    """Read a migration strategy name (with or without its prefix) into the enum."""
+    name = str(request.get(key) or "").strip().upper()
+    if not name:
+        if required:
+            raise RequestError(f"'{key}' is required")
+        return MigrationStrategy.MIGRATION_STRATEGY_UNSPECIFIED
+    full_name = f"MIGRATION_STRATEGY_{name.removeprefix('MIGRATION_STRATEGY_')}"
+    try:
+        return MigrationStrategy.Value(full_name)
+    except ValueError as exc:
+        raise RequestError(f"unknown migration strategy {name!r}") from exc
+
+
+def _lifecycle_state(request: dict[str, Any]) -> Any:
+    """Read an optional lifecycle state name (with or without its prefix)."""
+    name = str(request.get("lifecycle_state") or "").strip().upper()
+    if not name:
+        return common_types.KeyLifecycleState.KEY_LIFECYCLE_STATE_UNSPECIFIED
+    full_name = f"KEY_LIFECYCLE_STATE_{name.removeprefix('KEY_LIFECYCLE_STATE_')}"
+    try:
+        return common_types.KeyLifecycleState.Value(full_name)
+    except ValueError as exc:
+        raise RequestError(f"unknown lifecycle state {name!r}") from exc
+
+
+def _page_size(request: dict[str, Any]) -> int:
+    value = request.get("page_size")
+    if value is None or value == "":
+        return 0
+    try:
+        size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RequestError("'page_size' must be a whole number") from exc
+    if size < 0:
+        raise RequestError("'page_size' must not be negative")
+    return size
+
+
+def _key_summary(view: sdk_keys.KeyMetadataView) -> dict[str, Any]:
+    """One inventory row: where a key lives and what it is."""
+    return {
+        "name": view.name,
+        "version": view.version,
+        "template_id": view.template_id,
+        "provider": view.provider,
+        "policy": view.policy,
+        "extractable": view.extractable,
+        "lifecycle_state": common_types.KeyLifecycleState.Name(view.lifecycle_state),
+        "origin": common_types.KeyOrigin.Name(view.origin),
+    }
+
+
 def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def create_key(request: dict[str, Any]) -> RpcResult:
         try:
@@ -819,14 +879,7 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
     async def migrate_key(request: dict[str, Any]) -> RpcResult:
-        strategy_name = str(request.get("strategy") or "").strip().upper()
-        if not strategy_name:
-            raise RequestError("'strategy' is required")
-        full_name = f"MIGRATION_STRATEGY_{strategy_name.removeprefix('MIGRATION_STRATEGY_')}"
-        try:
-            strategy = MigrationStrategy.Value(full_name)
-        except ValueError as exc:
-            raise RequestError(f"unknown migration strategy {strategy_name!r}") from exc
+        strategy = _migration_strategy(request, "strategy", required=True)
         try:
             built = sdk_keys.migrate_key_request(
                 _require_text(request, "name"),
@@ -840,6 +893,84 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         status = ResultStatus.OK if result.success else ResultStatus.FAILED_PRECONDITION
         return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
+    async def list_keys(request: dict[str, Any]) -> RpcResult:
+        try:
+            built = sdk_keys.list_keys_request(
+                provider_id=str(request.get("provider_id") or "").strip(),
+                policy=str(request.get("policy") or "").strip(),
+                lifecycle_state=_lifecycle_state(request),
+                page_size=_page_size(request),
+                page_token=str(request.get("page_token") or "").strip(),
+            )
+            result = await clients.key_management.list_keys(built)
+        except CitiusError as error:
+            return error_result(error)
+        keys = [_key_summary(view) for view in result.keys]
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=f"{len(keys)} key(s)" + ("; more on the next page" if result.next_page_token else ""),
+            response={
+                "keys": keys,
+                "next_page_token": result.next_page_token,
+                "full_response": _full_response(result.proto),
+            },
+        )
+
+    async def validate_key_operation(request: dict[str, Any]) -> RpcResult:
+        try:
+            built = sdk_keys.validate_migration_request(
+                _require_text(request, "name"),
+                target_instance_id=str(request.get("target_instance_id") or "").strip(),
+                target_provider_id=str(request.get("target_provider_id") or "").strip(),
+                preferred_strategy=_migration_strategy(request, "preferred_strategy", required=False),
+            )
+            result = await clients.key_management.validate_key_operation(built)
+        except CitiusError as error:
+            return error_result(error)
+        recommended = result.recommended_strategy
+        feasible = recommended != MigrationStrategy.MIGRATION_STRATEGY_UNSPECIFIED
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=(f"recommended: {MigrationStrategy.Name(recommended)}" if feasible else "no strategy is feasible"),
+            response={
+                "current": {
+                    "instance_id": result.current_instance_id,
+                    "template_id": result.current_template_id,
+                    "extractable": result.current_extractable,
+                },
+                "recommended_strategy": MigrationStrategy.Name(recommended),
+                "recommendation_reason": result.recommendation_reason,
+                "options": [
+                    {
+                        "strategy": option.strategy_name,
+                        "feasible": option.feasible,
+                        "why_not": option.infeasibility_reason,
+                        "security_notes": option.security_notes,
+                    }
+                    for option in result.options
+                ],
+                "full_response": _full_response(result.proto),
+            },
+        )
+
+    registry.register(
+        RpcAction(
+            service="KeyManagementService",
+            method="ListKeys",
+            permission=PERMISSION_BY_METHOD["ListKeys"],
+            availability=Availability.AVAILABLE,
+            invoke=_normalized(list_keys),
+        )
+    )
+    registry.register(
+        RpcAction(
+            service="KeyManagementService",
+            method="ValidateKeyOperation",
+            permission=PERMISSION_BY_METHOD["ValidateKeyOperation"],
+            availability=Availability.AVAILABLE,
+            invoke=_normalized(validate_key_operation),
+        )
+    )
     registry.register(
         RpcAction(
             service="KeyManagementService",
