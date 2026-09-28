@@ -290,3 +290,19 @@ def test_list_keys_leaves_out_keys_the_persona_may_not_read():
     _, listed = execute(state, "CISO", "KeyManagementService", "ListKeys", {})
     assert listed["status"] == "OK"
     assert [k["name"] for k in listed["response"]["keys"]] == ["demo-signing-key"]
+
+
+def test_read_key_returns_the_requested_version():
+    state, _ = execute(
+        _mock_with_key(),
+        "CISO",
+        "KeyManagementService",
+        "MigrateKey",
+        request_example("KeyManagementService", "MigrateKey"),
+    )
+    _, first = execute(state, "CISO", "KeyManagementService", "ReadKey", {"name": "demo-signing-key", "version": 1})
+    assert first["response"]["key_metadata"]["provider"] == "software"
+    _, current = execute(state, "CISO", "KeyManagementService", "ReadKey", {"name": "demo-signing-key"})
+    assert current["response"]["key_metadata"]["provider"] == "openssl"
+    _, missing = execute(state, "CISO", "KeyManagementService", "ReadKey", {"name": "demo-signing-key", "version": 9})
+    assert missing["status"] == "NOT_FOUND"

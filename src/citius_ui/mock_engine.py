@@ -615,6 +615,12 @@ def _dispatch(state: dict[str, Any], service: str, method: str, request: dict[st
         name = str(request.get("name", ""))
         if name not in state["keys"]:
             return _error("NOT_FOUND", f"key {name!r} not found", "storage")
+        version = int(request.get("version") or 0)
+        if version:
+            recorded = state["key_versions"].get(name, {}).get(str(version))
+            if recorded is None:
+                return _error("NOT_FOUND", f"key {name!r} has no version {version}", "storage")
+            return _ok({"key_metadata": recorded})
         return _ok({"key_metadata": state["keys"][name]})
 
     if method == "TransformKey":
