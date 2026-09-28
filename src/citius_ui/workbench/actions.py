@@ -21,7 +21,7 @@ from citius_api.services.discovery_service_pb2 import ListTemplatesRequest
 from citius_api.types import common_pb2 as common_types
 from citius_api.types import implementation_pb2 as common_impl
 from citius_api.types import templates_pb2 as templates_types
-from citius_sdk.errors import CitiusError
+from citius_sdk.errors import CitiusError, NotFoundError
 from citius_sdk.services import crypto as sdk_crypto
 from citius_sdk.services import crypto_policy as sdk_policy
 from citius_sdk.services import key_management as sdk_keys
@@ -856,6 +856,57 @@ def _key_summary(view: sdk_keys.KeyMetadataView) -> dict[str, Any]:
     }
 
 
+# Where a version lives and what it is; the timeline marks which of these
+# changed from the version before.
+_TIMELINE_FIELDS = ("template_id", "provider", "policy", "extractable", "origin", "lifecycle_state")
+# Bound on the ReadKey calls one timeline makes; older versions are left out.
+_TIMELINE_MAX_VERSIONS = 50
+
+
+async def _version_timeline(clients: CitiusClients, name: str) -> RpcResult:
+    """Read every version of a key, oldest first, marking what each one changed.
+
+    ReadKey without a version gives the current one, and so the count; each
+    earlier version is then read by number. A version the server no longer
+    has (NOT_FOUND) stays in the timeline as unavailable.
+    """
+    try:
+        current = await clients.key_management.read_key(sdk_keys.read_key_request(name))
+    except CitiusError as error:
+        return error_result(error)
+    if current.key_metadata is None:
+        return RpcResult(status=ResultStatus.OK, message="the server returned no key metadata", response={})
+    latest = current.key_metadata.version
+    first = max(1, latest - _TIMELINE_MAX_VERSIONS + 1)
+    rows: list[dict[str, Any]] = []
+    previous: dict[str, Any] | None = None
+    for number in range(first, latest + 1):
+        if number == latest:
+            view: sdk_keys.KeyMetadataView | None = current.key_metadata
+        else:
+            try:
+                view = (
+                    await clients.key_management.read_key(sdk_keys.read_key_request(name, version=number))
+                ).key_metadata
+            except NotFoundError:
+                view = None
+            except CitiusError as error:
+                return error_result(error)
+        if view is None:
+            rows.append({"version": number, "available": False})
+            continue
+        row = {**_key_summary(view), "available": True}
+        row["changed"] = (
+            [field for field in _TIMELINE_FIELDS if row[field] != previous[field]] if previous is not None else []
+        )
+        rows.append(row)
+        previous = row
+    message = f"{len(rows)} version(s)"
+    if first > 1:
+        message += f"; versions before {first} left out"
+    return RpcResult(status=ResultStatus.OK, message=message, response={"timeline": rows})
+
+
 def _migration_summary(result: sdk_keys.MigrateKeyResult) -> dict[str, Any]:
     """What a migration did: the strategy, where the key went, and what was archived."""
     implementation = result.target_implementation
@@ -902,6 +953,10 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
 
     async def read_key(request: dict[str, Any]) -> RpcResult:
         version = _key_version(request)
+        if request.get("all_versions"):
+            if version is not None:
+                raise RequestError("set either 'version' or 'all_versions', not both")
+            return await _version_timeline(clients, _require_text(request, "name"))
         try:
             built = sdk_keys.read_key_request(_require_text(request, "name"), version=version)
             result = await clients.key_management.read_key(built)

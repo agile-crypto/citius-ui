@@ -434,8 +434,14 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("name", "Key name", placeholder="demo-signing-key"),
             FormField("version", "Version", kind="number", optional=True),
+            FormField(
+                "all_versions",
+                "Show every version",
+                kind="bool",
+                help="A timeline, oldest first, of each version's template, provider and origin, and what changed.",
+            ),
         ),
-        examples=(("demo-signing-key", None),),
+        examples=(("demo-signing-key", None, False), ("demo-signing-key", None, True)),
     ),
     RpcFormSpec(
         "KeyManagementService",

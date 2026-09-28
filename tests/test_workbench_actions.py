@@ -721,3 +721,26 @@ def test_read_key_rejects_a_bad_version(version: object) -> None:
 
     result = asyncio.run(_read_key_action(_VersionedKeys()).invoke({"name": "k", "version": version}))  # type: ignore[attr-defined]
     assert result.status is ResultStatus.INVALID_ARGUMENT
+
+
+def test_read_key_walks_every_version_marking_what_changed() -> None:
+    import asyncio
+
+    keys = _VersionedKeys()
+    result = asyncio.run(_read_key_action(keys).invoke({"name": "demo-signing-key", "all_versions": True}))  # type: ignore[attr-defined]
+    assert result.status is ResultStatus.OK
+    assert keys.asked == [0, 1, 2]  # current first, for the count; then each earlier one
+    first, destroyed, current = result.response["timeline"]
+    assert (first["version"], first["available"], first["changed"]) == (1, True, [])
+    assert destroyed == {"version": 2, "available": False}
+    assert current["version"] == 3
+    assert current["changed"] == ["template_id", "provider"]
+
+
+def test_read_key_refuses_a_version_with_the_timeline() -> None:
+    import asyncio
+
+    result = asyncio.run(
+        _read_key_action(_VersionedKeys()).invoke({"name": "k", "version": 1, "all_versions": True})  # type: ignore[attr-defined]
+    )
+    assert result.status is ResultStatus.INVALID_ARGUMENT
