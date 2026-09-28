@@ -1132,11 +1132,14 @@ def _register_discovery(registry: ActionRegistry, clients: CitiusClients) -> Non
         if standard:
             built.required_standards.append(standard)
         scope = str(request.get("scope") or "").strip()
+        security = _security_properties(request)
+        if security is not None and not scope:
+            # The API carries security filters inside the scope specification,
+            # so without a scope they would be silently dropped.
+            raise RequestError("security filters need a scope; pick one or clear the filters")
         if scope:
             try:
-                built.scope_spec.CopyFrom(
-                    sdk.build_scope_spec(_resolve_scope(scope), security=_security_properties(request))
-                )
+                built.scope_spec.CopyFrom(sdk.build_scope_spec(_resolve_scope(scope), security=security))
             except ValueError as exc:
                 raise RequestError(str(exc)) from exc
         try:

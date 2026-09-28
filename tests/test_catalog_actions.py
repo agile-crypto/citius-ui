@@ -85,6 +85,14 @@ def test_list_templates_rejects_an_unknown_status() -> None:
     assert result.status is ResultStatus.INVALID_ARGUMENT
 
 
+def test_list_templates_refuses_security_filters_without_a_scope() -> None:
+    registry = ActionRegistry()
+    _register_discovery(registry, SimpleNamespace(discovery=_Discovery()))  # type: ignore[arg-type]
+    result = _invoke(registry, "AlgorithmDiscoveryService", "ListTemplates", {"quantum_safe": "true"})
+    assert result.status is ResultStatus.INVALID_ARGUMENT
+    assert "need a scope" in result.message
+
+
 def test_get_template_and_list_scopes() -> None:
     registry = ActionRegistry()
     _register_discovery(registry, SimpleNamespace(discovery=_Discovery()))  # type: ignore[arg-type]
