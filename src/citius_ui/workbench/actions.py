@@ -828,6 +828,20 @@ def _page_size(request: dict[str, Any]) -> int:
     return size
 
 
+def _key_version(request: dict[str, Any]) -> int | None:
+    """Read an optional key version; blank or 0 means the current version."""
+    value = request.get("version")
+    if value is None or value == "":
+        return None
+    try:
+        version = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RequestError("'version' must be a whole number") from exc
+    if version < 0:
+        raise RequestError("'version' must not be negative")
+    return version or None
+
+
 def _key_summary(view: sdk_keys.KeyMetadataView) -> dict[str, Any]:
     """One inventory row: where a key lives and what it is."""
     return {
@@ -887,8 +901,9 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         return RpcResult(status=status, message=result.message, response=_full_response(result.proto))
 
     async def read_key(request: dict[str, Any]) -> RpcResult:
+        version = _key_version(request)
         try:
-            built = sdk_keys.read_key_request(_require_text(request, "name"))
+            built = sdk_keys.read_key_request(_require_text(request, "name"), version=version)
             result = await clients.key_management.read_key(built)
         except CitiusError as error:
             return error_result(error)

@@ -668,3 +668,56 @@ def test_validate_key_operation_without_a_feasible_strategy_says_so() -> None:
     result = asyncio.run(action.invoke({"name": "k", "target_provider_id": "hsm"}))
     assert result.status is ResultStatus.OK
     assert result.message == "no strategy is feasible"
+
+
+class _VersionedKeys:
+    """Serves ReadKey for a key with versions 1..3; version 2 has been destroyed."""
+
+    def __init__(self) -> None:
+        self.asked: list[int] = []
+
+    async def read_key(self, request: object) -> object:
+        from citius_api.messages.key_management_pb2 import ReadKeyResponse
+        from citius_sdk.errors import NotFoundError
+        from citius_sdk.services.key_management import ReadKeyResult
+
+        version = request.version  # type: ignore[attr-defined]
+        self.asked.append(version)
+        if version == 2:
+            raise NotFoundError(grpc.StatusCode.NOT_FOUND, "version destroyed")
+        response = ReadKeyResponse()
+        meta = response.key_metadata
+        meta.name = "demo-signing-key"
+        meta.version = version or 3
+        meta.template_id = "ml-dsa-65" if meta.version == 3 else "ecdsa-p256-sha256-der"
+        meta.provider = "openssl" if meta.version == 3 else "software"
+        return ReadKeyResult(response)
+
+
+def _read_key_action(keys: object) -> object:
+    from types import SimpleNamespace
+
+    from citius_ui.actions.registry import ActionRegistry
+    from citius_ui.workbench.actions import _register_keys
+
+    registry = ActionRegistry()
+    _register_keys(registry, SimpleNamespace(key_management=keys))  # type: ignore[arg-type]
+    return registry.get("KeyManagementService", "ReadKey")
+
+
+def test_read_key_pins_the_requested_version() -> None:
+    import asyncio
+
+    keys = _VersionedKeys()
+    result = asyncio.run(_read_key_action(keys).invoke({"name": "demo-signing-key", "version": 1}))  # type: ignore[attr-defined]
+    assert result.status is ResultStatus.OK
+    assert keys.asked == [1]
+    assert result.response["key_metadata"]["version"] == 1
+
+
+@pytest.mark.parametrize("version", ["two", -1])
+def test_read_key_rejects_a_bad_version(version: object) -> None:
+    import asyncio
+
+    result = asyncio.run(_read_key_action(_VersionedKeys()).invoke({"name": "k", "version": version}))  # type: ignore[attr-defined]
+    assert result.status is ResultStatus.INVALID_ARGUMENT
