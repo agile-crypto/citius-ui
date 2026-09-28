@@ -17,17 +17,25 @@ unavailable.
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
+from citius_sdk.errors import CitiusError
 
 from citius_ui.actions.executor import ActionExecutor, ExecutionContext
 from citius_ui.actions.model import Availability
 from citius_ui.auth.sessions import SessionStore
 from citius_ui.config import AppConfig
 from citius_ui.grpc_client.client import CitiusClients
+from citius_ui.grpc_client.serialization import error_result
 from citius_ui.history.memory_store import MemoryHistoryStore
+from citius_ui.showcases.inventory import collect as collect_inventory
+from citius_ui.showcases.inventory import render_markdown as render_inventory
+from citius_ui.showcases.inventory import to_cyclonedx
 from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
 from citius_ui.workbench.catalogue import choices_for, load_choices
@@ -50,6 +58,21 @@ _CONSUMER_HINT = {
     "DigestSign": "DigestVerify",
     "Encrypt": "Decrypt",
 }
+
+# Inventory table columns, in display order (keys of Inventory.table() rows).
+_INVENTORY_COLUMNS = (
+    "name",
+    "version",
+    "algorithm",
+    "template_id",
+    "pq_ready",
+    "nist_quantum_security_level",
+    "fips_approved_algorithm",
+    "provider",
+    "provider_fips_140",
+    "fips_ready",
+    "lifecycle_state",
+)
 
 # Service -> accent class, for the services with at least one implemented RPC
 # (the rest render as an unaccented, muted card).
@@ -531,6 +554,32 @@ def build_workbench(
                 )
         return body
 
+    async def _build_inventory(request: gr.Request) -> tuple[str, list[list[Any]], Any]:
+        """Collect the session's inventory; offer its CBOM as a download."""
+        hidden = gr.update(visible=False)
+        session = sessions.get(request.cookies.get(config.session_cookie_name))
+        if session is None:
+            return "**No active session.** Sign in again.", [], hidden
+        try:
+            clients = CitiusClients(config, make_provider(session.id))
+        except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
+            return f"**UNAVAILABLE** · could not create a Citius client: {exc}", [], hidden
+        try:
+            inventory = await collect_inventory(clients)
+        except CitiusError as error:
+            result = error_result(error)
+            return f"**{result.status.value}** · ListKeys failed: {result.message}", [], hidden
+        finally:
+            try:
+                await clients.close()
+            except Exception:  # noqa: BLE001 - closing must never mask the result
+                pass
+        rows = [[row[column] for column in _INVENTORY_COLUMNS] for row in inventory.table()]
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = Path(tempfile.mkdtemp(prefix="citius-cbom-")) / f"citius-cbom-{stamp}.json"
+        path.write_text(json.dumps(to_cyclonedx(inventory), indent=2), encoding="utf-8")
+        return render_inventory(inventory), rows, gr.update(value=str(path), visible=True)
+
     def _render_service_card(service: str, *, open_by_default: bool) -> None:
         forms = _forms_for(service)
         label = SERVICE_LABELS.get(service, service)
@@ -619,6 +668,22 @@ def build_workbench(
                             _render_service_card(service, open_by_default=False)
                         else:
                             _render_unavailable_card(service)
+
+            with gr.Tab("Crypto inventory"):
+                with gr.Column(elem_classes=["service-body"]):
+                    gr.Markdown(
+                        "Every key this identity can read, with what the catalogue says about its "
+                        "algorithm (quantum-safe, FIPS-approved) and the FIPS 140 level of the "
+                        "instance holding it. Export it as a CycloneDX 1.6 CBOM."
+                    )
+                    build_inventory_button = gr.Button("Build inventory", variant="primary")
+                    inventory_report = gr.Markdown()
+                    inventory_table = gr.Dataframe(headers=list(_INVENTORY_COLUMNS), interactive=False, wrap=True)
+                    cbom_download = gr.DownloadButton("Download CBOM (CycloneDX JSON)", visible=False)
+                    build_inventory_button.click(
+                        _build_inventory,
+                        outputs=[inventory_report, inventory_table, cbom_download],
+                    )
 
             with gr.Tab("Demo runbooks"):
                 with gr.Column(elem_classes=["service-body"]):
