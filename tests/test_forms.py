@@ -226,3 +226,14 @@ def test_migrate_key_offers_the_implemented_strategies_with_one_target_per_examp
         assert len(example) == len(keys)
         targets = [example[keys.index("target_instance_id")], example[keys.index("target_provider_id")]]
         assert sum(bool(t) for t in targets) == 1, example
+
+
+def test_every_implemented_rpc_has_a_form_whose_examples_fit() -> None:
+    from citius_ui.workbench.actions import IMPLEMENTED
+
+    for service, methods in IMPLEMENTED.items():
+        for method in methods:
+            spec = FORMS_BY_METHOD.get((service, method))
+            assert spec is not None, f"{service}.{method} has no form"
+            for example in spec.examples:
+                assert len(example) == len(spec.fields), f"{method}: example does not match its fields"

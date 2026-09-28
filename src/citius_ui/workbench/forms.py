@@ -770,6 +770,109 @@ FORMS: tuple[RpcFormSpec, ...] = (
         examples=(("demo-digest-key", "<paste Digest sign bundle>", "", "", "", "", ""),),
         consumes="Signature",
     ),
+    # ── Catalogue: templates, scopes, providers ──────────────────────────────
+    RpcFormSpec(
+        "AlgorithmDiscoveryService",
+        "ListTemplates",
+        "List templates",
+        (
+            FormField(
+                "scope",
+                "Scope",
+                kind="dropdown",
+                choices=_KEY_SCOPES,
+                optional=True,
+                help="Keeps the templates that offer this scope: the same match CreateKey applies.",
+            ),
+            FormField(
+                "allowed_statuses",
+                "Statuses",
+                placeholder="ACTIVE, EXPERIMENTAL",
+                optional=True,
+                help="Comma-separated; blank lists every status.",
+            ),
+            FormField("required_standard", "Required standard", placeholder="FIPS 204", optional=True),
+            FormField("page_size", "Page size", kind="number", optional=True, help="0 or blank lists every template."),
+            FormField("page_token", "Page token", optional=True, help="The next_page_token of the previous page."),
+            *_security_property_fields(),
+        ),
+        examples=(
+            ("", "", "", None, "", None, "", "", "", ""),
+            ("SIGNATURE_STANDARD", "", "", None, "", None, "", "", "true", ""),
+            ("AEAD_STANDARD", "ACTIVE", "", None, "", None, "", "", "", "true"),
+        ),
+    ),
+    RpcFormSpec(
+        "AlgorithmDiscoveryService",
+        "GetTemplate",
+        "Get template",
+        (FormField("template_id", "Template ID", placeholder="ml-dsa-65"),),
+        examples=(("ml-dsa-65",), ("aes-256-gcm-128-96",)),
+    ),
+    RpcFormSpec(
+        "AlgorithmDiscoveryService",
+        "ListScopes",
+        "List scopes",
+        (),
+    ),
+    RpcFormSpec(
+        "ProviderService",
+        "MatchProviders",
+        "Match providers",
+        (
+            FormField(
+                "template_id",
+                "Template ID",
+                placeholder="aes-256-gcm-128-96",
+                optional=True,
+                help="The first match is the instance CreateKey would choose for this template.",
+            ),
+            *_provider_requirement_fields(),
+        ),
+        examples=(
+            ("aes-256-gcm-128-96", False, "", False, False, False, False, False),
+            ("aes-256-gcm-128-96", True, "", False, False, False, False, False),
+            ("aes-256-gcm-128-96", False, "", False, False, False, False, True),
+        ),
+    ),
+    RpcFormSpec(
+        "ProviderService",
+        "ListProviderInstances",
+        "List instances",
+        (
+            FormField("provider_id", "Provider", placeholder="openssl", optional=True),
+            FormField("page_size", "Page size", kind="number", optional=True),
+            FormField("page_token", "Page token", optional=True),
+            *_provider_requirement_fields(),
+        ),
+        examples=(("", None, "", False, "", False, False, False, False, False),),
+    ),
+    RpcFormSpec(
+        "ProviderService",
+        "GetProviderInstance",
+        "Get instance",
+        (FormField("instance_id", "Instance ID", placeholder="openssl"),),
+        examples=(("software",), ("openssl",)),
+    ),
+    RpcFormSpec(
+        "ProviderService",
+        "ListProviders",
+        "List providers",
+        (
+            FormField("template_id", "Template ID", placeholder="ml-dsa-65", optional=True),
+            FormField("page_size", "Page size", kind="number", optional=True),
+            FormField("page_token", "Page token", optional=True),
+            *_provider_requirement_fields(),
+        ),
+        examples=(("", None, "", False, "", False, False, False, False, False),),
+    ),
+    RpcFormSpec(
+        "ProviderService",
+        "GetProvider",
+        "Get provider",
+        (FormField("provider_id", "Provider ID", placeholder="openssl"),),
+        examples=(("openssl",),),
+    ),
 )
 
 FORMS_BY_METHOD: dict[tuple[str, str], RpcFormSpec] = {(f.service, f.method): f for f in FORMS}
