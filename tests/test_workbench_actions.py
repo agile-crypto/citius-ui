@@ -735,6 +735,8 @@ def test_read_key_walks_every_version_marking_what_changed() -> None:
     assert destroyed == {"version": 2, "available": False}
     assert current["version"] == 3
     assert current["changed"] == ["template_id", "provider"]
+    assert set(current) == {"version", "template_id", "provider", "extractable", "available", "changed"}
+    assert set(result.response["key"]) == {"name", "policy", "lifecycle_state"}
 
 
 def test_read_key_refuses_a_version_with_the_timeline() -> None:

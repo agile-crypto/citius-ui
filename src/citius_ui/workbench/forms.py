@@ -438,7 +438,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "all_versions",
                 "Show every version",
                 kind="bool",
-                help="A timeline, oldest first, of each version's template, provider and origin, and what changed.",
+                help=(
+                    "A timeline, oldest first, of each version's template, provider and extractability, "
+                    "and what changed. Policy and lifecycle state are the key's, shown once."
+                ),
             ),
         ),
         examples=(("demo-signing-key", None, False), ("demo-signing-key", None, True)),

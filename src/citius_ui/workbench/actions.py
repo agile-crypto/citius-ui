@@ -856,9 +856,12 @@ def _key_summary(view: sdk_keys.KeyMetadataView) -> dict[str, Any]:
     }
 
 
-# Where a version lives and what it is; the timeline marks which of these
-# changed from the version before.
-_TIMELINE_FIELDS = ("template_id", "provider", "policy", "extractable", "origin", "lifecycle_state")
+# What ReadKey reports per version: where it lives and what it is. The
+# timeline marks which of these changed from the version before. Policy and
+# lifecycle state belong to the key, not a version (ReadKey reports the
+# key's own for every version), and the server does not fill origin, so they
+# are shown once, for the key, and never marked as changed.
+_TIMELINE_FIELDS = ("template_id", "provider", "extractable")
 # Bound on the ReadKey calls one timeline makes; older versions are left out.
 _TIMELINE_MAX_VERSIONS = 50
 
@@ -895,7 +898,8 @@ async def _version_timeline(clients: CitiusClients, name: str) -> RpcResult:
         if view is None:
             rows.append({"version": number, "available": False})
             continue
-        row = {**_key_summary(view), "available": True}
+        row: dict[str, Any] = {"version": view.version, **{f: _key_summary(view)[f] for f in _TIMELINE_FIELDS}}
+        row["available"] = True
         row["changed"] = (
             [field for field in _TIMELINE_FIELDS if row[field] != previous[field]] if previous is not None else []
         )
@@ -904,7 +908,19 @@ async def _version_timeline(clients: CitiusClients, name: str) -> RpcResult:
     message = f"{len(rows)} version(s)"
     if first > 1:
         message += f"; versions before {first} left out"
-    return RpcResult(status=ResultStatus.OK, message=message, response={"timeline": rows})
+    key = current.key_metadata
+    return RpcResult(
+        status=ResultStatus.OK,
+        message=message,
+        response={
+            "key": {
+                "name": key.name,
+                "policy": key.policy,
+                "lifecycle_state": common_types.KeyLifecycleState.Name(key.lifecycle_state),
+            },
+            "timeline": rows,
+        },
+    )
 
 
 def _migration_summary(result: sdk_keys.MigrateKeyResult) -> dict[str, Any]:
