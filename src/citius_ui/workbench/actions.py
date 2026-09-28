@@ -17,8 +17,10 @@ from typing import Any
 import citius_sdk as sdk
 from citius_api.messages.key_management_pb2 import MigrationStrategy
 from citius_api.messages.metadata_pb2 import OperationMetadata as OperationMetadataProto
+from citius_api.services.discovery_service_pb2 import ListTemplatesRequest
 from citius_api.types import common_pb2 as common_types
 from citius_api.types import implementation_pb2 as common_impl
+from citius_api.types import templates_pb2 as templates_types
 from citius_sdk.errors import CitiusError
 from citius_sdk.services import crypto as sdk_crypto
 from citius_sdk.services import crypto_policy as sdk_policy
@@ -60,13 +62,7 @@ CONTRACT_ONLY: dict[str, list[str]] = {
         "GenerateRandom",
         "SeedRandom",
     ],
-    "AlgorithmDiscoveryService": ["GetTemplate", "ListScopes"],
     "ProviderService": [
-        "ListProviders",
-        "GetProvider",
-        "MatchProviders",
-        "ListProviderInstances",
-        "GetProviderInstance",
         "RegisterProviderInstance",
         "UpdateProviderInstance",
         "DeleteProviderInstance",
@@ -103,6 +99,14 @@ PERMISSION_BY_METHOD: dict[str, str] = {
     "Verify": "citius:crypto:verify",
     "DigestSign": "citius:crypto:sign",
     "DigestVerify": "citius:crypto:verify",
+    "ListTemplates": "citius:discovery:read",
+    "GetTemplate": "citius:discovery:read",
+    "ListScopes": "citius:discovery:read",
+    "ListProviders": "citius:provider:read",
+    "GetProvider": "citius:provider:read",
+    "ListProviderInstances": "citius:provider:read",
+    "GetProviderInstance": "citius:provider:read",
+    "MatchProviders": "citius:provider:read",
 }
 
 
@@ -117,6 +121,14 @@ IMPLEMENTED: dict[str, list[str]] = {
         "ValidateKeyOperation",
     ],
     "CryptoService": ["Encrypt", "Decrypt", "Sign", "Verify", "DigestSign", "DigestVerify"],
+    "AlgorithmDiscoveryService": ["ListTemplates", "GetTemplate", "ListScopes"],
+    "ProviderService": [
+        "ListProviders",
+        "GetProvider",
+        "ListProviderInstances",
+        "GetProviderInstance",
+        "MatchProviders",
+    ],
 }
 
 
@@ -543,6 +555,8 @@ def build_registry(clients: CitiusClients) -> ActionRegistry:
     _register_crypto(registry, clients)
     _register_keys(registry, clients)
     _register_policy(registry, clients)
+    _register_discovery(registry, clients)
+    _register_providers(registry, clients)
     _register_contract_only(registry)
     return registry
 
@@ -1072,6 +1086,291 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
             invoke=_normalized(update_policy),
         )
     )
+
+
+def _template_summary(info: Any) -> dict[str, Any]:
+    """One catalogue row: what a template is and how quantum-safe it is."""
+    quantum_level = info.cyclonedx.nist_quantum_security_level
+    return {
+        "template_id": info.template_id,
+        "display_name": info.display_name,
+        "status": templates_types.TemplateStatus.Name(info.status),
+        "standards": list(info.standards),
+        "classical_security_bits": info.cyclonedx.classical_security_level,
+        "nist_quantum_security_level": quantum_level,
+        "quantum_safe": quantum_level > 0,
+    }
+
+
+def _template_statuses(request: dict[str, Any]) -> list[Any]:
+    raw = request.get("allowed_statuses")
+    if raw is None or raw == "":
+        return []
+    names = raw if isinstance(raw, list) else str(raw).split(",")
+    statuses = []
+    for name in names:
+        text = str(name).strip().upper()
+        if not text:
+            continue
+        try:
+            statuses.append(
+                templates_types.TemplateStatus.Value(f"TEMPLATE_STATUS_{text.removeprefix('TEMPLATE_STATUS_')}")
+            )
+        except ValueError as exc:
+            raise RequestError(f"unknown template status {text!r}") from exc
+    return statuses
+
+
+def _register_discovery(registry: ActionRegistry, clients: CitiusClients) -> None:
+    async def list_templates(request: dict[str, Any]) -> RpcResult:
+        built = ListTemplatesRequest(
+            allowed_statuses=_template_statuses(request),
+            page_size=_page_size(request),
+            page_token=str(request.get("page_token") or "").strip(),
+        )
+        standard = str(request.get("required_standard") or "").strip()
+        if standard:
+            built.required_standards.append(standard)
+        scope = str(request.get("scope") or "").strip()
+        if scope:
+            try:
+                built.scope_spec.CopyFrom(
+                    sdk.build_scope_spec(_resolve_scope(scope), security=_security_properties(request))
+                )
+            except ValueError as exc:
+                raise RequestError(str(exc)) from exc
+        try:
+            result = await clients.discovery.list_templates(built)
+        except CitiusError as error:
+            return error_result(error)
+        rows = [_template_summary(t) for t in result.templates]
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=f"{len(rows)} template(s)" + ("; more on the next page" if result.next_page_token else ""),
+            response={
+                "templates": rows,
+                "next_page_token": result.next_page_token,
+                "full_response": _full_response(result),
+            },
+        )
+
+    async def get_template(request: dict[str, Any]) -> RpcResult:
+        try:
+            info = await clients.discovery.get_template(_require_text(request, "template_id"))
+        except CitiusError as error:
+            return error_result(error)
+        return RpcResult(
+            status=ResultStatus.OK,
+            response={"summary": _template_summary(info), "full_response": _full_response(info)},
+        )
+
+    async def list_scopes(_request: dict[str, Any]) -> RpcResult:
+        try:
+            result = await clients.discovery.list_scopes()
+        except CitiusError as error:
+            return error_result(error)
+        scopes = [
+            {
+                "scope": s.name,
+                "operations": [common_types.CryptoOperation.Name(o) for o in s.supported_operations],
+            }
+            for s in result.scopes
+        ]
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=f"{len(scopes)} scope(s) offered by the catalogue",
+            response={"scopes": scopes, "full_response": _full_response(result)},
+        )
+
+    for method, invoke in (
+        ("ListTemplates", list_templates),
+        ("GetTemplate", get_template),
+        ("ListScopes", list_scopes),
+    ):
+        registry.register(
+            RpcAction(
+                service="AlgorithmDiscoveryService",
+                method=method,
+                permission=PERMISSION_BY_METHOD[method],
+                availability=Availability.AVAILABLE,
+                invoke=_normalized(invoke),
+            )
+        )
+
+
+def _implementation_summary(props: Any) -> dict[str, Any]:
+    fips = props.fips_140
+    return {
+        "fips_140": common_impl.Fips140Level.Name(fips.level) if fips.certified else "not certified",
+        "language": props.implementation_language,
+        "memory_safe": props.memory_safe_language,
+        "hardware_accelerated": props.hardware_accelerated,
+        "constant_time": props.constant_time,
+    }
+
+
+def unmet_requirements(requirements: Any, props: Any) -> list[str]:
+    """Name each hard requirement ``props`` fails, mirroring the server's check.
+
+    ``requirements`` is a ProviderRequirements proto and ``props`` an
+    ImplementationProperties proto. An empty list means every hard
+    requirement is met.
+    """
+    fips = props.fips_140
+    checks = (
+        (requirements.fips_140_certified, fips.certified, "not FIPS 140 certified"),
+        (
+            requirements.min_fips_level > 0,
+            fips.certified and fips.level >= requirements.min_fips_level,
+            f"below {common_impl.Fips140Level.Name(requirements.min_fips_level)}",
+        ),
+        (requirements.common_criteria_certified, props.common_criteria_certified, "not Common Criteria certified"),
+        (requirements.formally_verified, props.formally_verified, "not formally verified"),
+        (requirements.memory_safe, props.memory_safe_language, "not written in a memory-safe language"),
+        (requirements.constant_time, props.constant_time, "not constant-time"),
+        (requirements.side_channel_hardened, props.side_channel_hardened, "not side-channel hardened"),
+        (
+            requirements.no_known_cve,
+            props.no_known_cve and not props.unpatched_cves,
+            "has known CVEs",
+        ),
+    )
+    return [reason for required, met, reason in checks if required and not met]
+
+
+def _register_providers(registry: ActionRegistry, clients: CitiusClients) -> None:
+    async def list_instances(request: dict[str, Any]) -> RpcResult:
+        try:
+            result = await clients.providers.list_provider_instances(
+                provider_id=str(request.get("provider_id") or "").strip(),
+                requirements=_provider_requirements(request),
+                page_size=_page_size(request),
+                page_token=str(request.get("page_token") or "").strip(),
+            )
+        except CitiusError as error:
+            return error_result(error)
+        rows = [
+            {
+                "instance_id": i.instance_id,
+                "provider": i.provider_id,
+                **_implementation_summary(i.implementation_override),
+            }
+            for i in result.instances
+        ]
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=f"{len(rows)} instance(s)",
+            response={
+                "instances": rows,
+                "next_page_token": result.next_page_token,
+                "full_response": _full_response(result),
+            },
+        )
+
+    async def get_instance(request: dict[str, Any]) -> RpcResult:
+        try:
+            instance = await clients.providers.get_provider_instance(_require_text(request, "instance_id"))
+        except CitiusError as error:
+            return error_result(error)
+        return RpcResult(
+            status=ResultStatus.OK,
+            response={
+                "instance_id": instance.instance_id,
+                "provider": instance.provider_id,
+                "implementation": _implementation_summary(instance.implementation_override),
+                "full_response": _full_response(instance),
+            },
+        )
+
+    async def list_providers(request: dict[str, Any]) -> RpcResult:
+        try:
+            result = await clients.providers.list_providers(
+                template_id=str(request.get("template_id") or "").strip(),
+                requirements=_provider_requirements(request),
+                page_size=_page_size(request),
+                page_token=str(request.get("page_token") or "").strip(),
+            )
+        except CitiusError as error:
+            return error_result(error)
+        rows = [{"provider": p.provider_id, "templates": len(p.template_support)} for p in result.providers]
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=f"{len(rows)} provider(s)",
+            response={
+                "providers": rows,
+                "next_page_token": result.next_page_token,
+                "full_response": _full_response(result),
+            },
+        )
+
+    async def get_provider(request: dict[str, Any]) -> RpcResult:
+        try:
+            info = await clients.providers.get_provider(_require_text(request, "provider_id"))
+        except CitiusError as error:
+            return error_result(error)
+        return RpcResult(
+            status=ResultStatus.OK,
+            response={
+                "provider": info.provider_id,
+                "templates": {s.template_id: s.notes for s in info.template_support},
+                "full_response": _full_response(info),
+            },
+        )
+
+    async def match_providers(request: dict[str, Any]) -> RpcResult:
+        """Rank the instances for a template, and say why every other one lost."""
+        requirements = _provider_requirements(request)
+        template_id = str(request.get("template_id") or "").strip()
+        try:
+            matches = await clients.providers.match_providers(
+                template_id=template_id,
+                requirements=requirements,
+            )
+            everyone = await clients.providers.list_provider_instances()
+        except CitiusError as error:
+            return error_result(error)
+        required = requirements.to_proto() if requirements is not None else common_impl.ProviderRequirements()
+        ranked = [
+            {
+                "rank": n,
+                "instance_id": m.instance.instance_id,
+                "score": m.match_score,
+                **_implementation_summary(m.resolved_implementation),
+            }
+            for n, m in enumerate(matches.matches, start=1)
+        ]
+        chosen = {row["instance_id"] for row in ranked}
+        excluded = []
+        for instance in everyone.instances:
+            if instance.instance_id in chosen:
+                continue
+            reasons = unmet_requirements(required, instance.implementation_override)
+            if not reasons:
+                reasons = [f"does not support template {template_id}" if template_id else "not selectable"]
+            excluded.append({"instance_id": instance.instance_id, "why_not": reasons})
+        message = f"CreateKey would choose {ranked[0]['instance_id']}" if ranked else "no instance can hold this key"
+        return RpcResult(
+            status=ResultStatus.OK,
+            message=message,
+            response={"ranked": ranked, "excluded": excluded, "full_response": _full_response(matches)},
+        )
+
+    for method, invoke in (
+        ("ListProviders", list_providers),
+        ("GetProvider", get_provider),
+        ("ListProviderInstances", list_instances),
+        ("GetProviderInstance", get_instance),
+        ("MatchProviders", match_providers),
+    ):
+        registry.register(
+            RpcAction(
+                service="ProviderService",
+                method=method,
+                permission=PERMISSION_BY_METHOD[method],
+                availability=Availability.AVAILABLE,
+                invoke=_normalized(invoke),
+            )
+        )
 
 
 def _register_contract_only(registry: ActionRegistry) -> None:
