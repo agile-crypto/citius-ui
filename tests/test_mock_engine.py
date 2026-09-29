@@ -306,3 +306,56 @@ def test_read_key_returns_the_requested_version():
     assert current["response"]["key_metadata"]["provider"] == "openssl"
     _, missing = execute(state, "CISO", "KeyManagementService", "ReadKey", {"name": "demo-signing-key", "version": 9})
     assert missing["status"] == "NOT_FOUND"
+
+
+def test_validate_migration_reports_refusals_as_reasons_like_the_server():
+    state = _mock_with_key()
+    _, same = execute(
+        state,
+        "CISO",
+        "KeyManagementService",
+        "ValidateKeyOperation",
+        {"name": "demo-signing-key", "target_instance_id": "software"},
+    )
+    assert same["status"] == "OK"
+    options = same["response"]["options"]
+    assert len(options) == 5 and not any(o["feasible"] for o in options)
+    assert all("already on provider instance" in o["infeasibility_reason"] for o in options)
+    assert same["response"]["recommended_strategy"] == "MIGRATION_STRATEGY_UNSPECIFIED"
+
+    _, only = execute(
+        state,
+        "CISO",
+        "KeyManagementService",
+        "ValidateKeyOperation",
+        {"name": "demo-signing-key", "target_instance_id": "openssl", "preferred_strategy": "REKEY_AND_ARCHIVE"},
+    )
+    assert [o["strategy"] for o in only["response"]["options"]] == ["MIGRATION_STRATEGY_REKEY_AND_ARCHIVE"]
+    assert only["response"]["recommended_strategy"] == "MIGRATION_STRATEGY_REKEY_AND_ARCHIVE"
+
+
+def test_migrate_key_checks_the_request_before_the_key_like_the_server():
+    state = _mock_with_key()
+    for request, message in (
+        ({"name": "demo-signing-key", "target_instance_id": "openssl"}, "strategy is required"),
+        (
+            {
+                "name": "demo-signing-key",
+                "strategy": "PROVIDER_SWITCH",
+                "target_instance_id": "openssl",
+                "target_provider_id": "openssl",
+            },
+            "exactly one of",
+        ),
+        ({"name": "demo-no-such-key", "strategy": "PROVIDER_SWITCH"}, "exactly one of"),
+    ):
+        _, result = execute(state, "CISO", "KeyManagementService", "MigrateKey", request)
+        assert result["status"] == "INVALID_ARGUMENT", request
+        assert message in result["error"]["message"], result
+
+
+def test_read_key_refuses_a_malformed_version():
+    _, result = execute(
+        _mock_with_key(), "CISO", "KeyManagementService", "ReadKey", {"name": "demo-signing-key", "version": "two"}
+    )
+    assert result["status"] == "INVALID_ARGUMENT"

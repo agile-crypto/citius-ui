@@ -522,31 +522,99 @@ def _resource_denied(persona_name: str, service: str, key_name: str, policy_name
 
 
 _MOCK_INSTANCES = ("software", "openssl")
+# Every strategy the API defines, in core's order, and the ones it carries out.
+_ALL_STRATEGIES = (
+    "PROVIDER_SWITCH",
+    "EXTRACT_AND_IMPORT",
+    "WRAPPED_TRANSFER",
+    "REKEY_AND_ARCHIVE",
+    "REKEY_AND_DESTROY",
+)
 _MOCK_STRATEGIES = ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
 
 
+def _strategy(value: Any) -> str:
+    return str(value or "").upper().removeprefix("MIGRATION_STRATEGY_").removesuffix("UNSPECIFIED")
+
+
+def _recommend(options: list[dict[str, Any]]) -> tuple[str, str]:
+    """Core's recommendation: provider switch if it can, else rekey and archive."""
+    feasible = {o["strategy"] for o in options if o["feasible"]}
+    if "MIGRATION_STRATEGY_PROVIDER_SWITCH" in feasible:
+        return "MIGRATION_STRATEGY_PROVIDER_SWITCH", "the key's material moves unchanged"
+    if "MIGRATION_STRATEGY_REKEY_AND_ARCHIVE" in feasible:
+        return "MIGRATION_STRATEGY_REKEY_AND_ARCHIVE", "new material is generated on the target"
+    return "MIGRATION_STRATEGY_UNSPECIFIED", "none of the assessed strategies can migrate the key to the target"
+
+
 def _mock_migration(state: dict[str, Any], method: str, request: dict[str, Any]) -> dict[str, Any]:
-    """Mock MigrateKey and its side-effect-free check, over the two in-process instances."""
+    """Mock MigrateKey and its side-effect-free check, over the two in-process instances.
+
+    It follows core's order: the request's shape is checked first
+    (INVALID_ARGUMENT, or UNIMPLEMENTED for a strategy MigrateKey does not
+    carry out), then the key is read, then the target judged. MigrateKey
+    fails on a refused target; ValidateKeyOperation reports the refusal as
+    each strategy's reason and still answers OK. Each mock instance is the
+    only instance of its provider type.
+    """
     name = str(request.get("name", ""))
+    instance = str(request.get("target_instance_id") or "")
+    provider = str(request.get("target_provider_id") or "")
+    if not name:
+        return _error("INVALID_ARGUMENT", "key name is required", "validation")
+    if bool(instance) == bool(provider):
+        return _error(
+            "INVALID_ARGUMENT", "exactly one of target instance ID or target provider ID is required", "validation"
+        )
+    if method == "MigrateKey":
+        strategy = _strategy(request.get("strategy"))
+        if not strategy:
+            return _error("INVALID_ARGUMENT", "migration strategy is required", "validation")
+        if strategy not in _ALL_STRATEGIES:
+            return _error("INVALID_ARGUMENT", f"unknown migration strategy {strategy}", "validation")
+        if strategy not in _MOCK_STRATEGIES:
+            return _error(
+                "UNIMPLEMENTED", f"migration strategy MIGRATION_STRATEGY_{strategy} is not implemented", "server"
+            )
+    else:
+        preferred = _strategy(request.get("preferred_strategy"))
+        if preferred and preferred not in _ALL_STRATEGIES:
+            return _error("INVALID_ARGUMENT", f"unknown migration strategy {preferred}", "validation")
     if name not in state["keys"]:
         return _error("NOT_FOUND", f"key {name!r} not found", "storage")
-    target = str(request.get("target_instance_id") or request.get("target_provider_id") or "")
     source = state["keys"][name]["provider"]
+    target = instance or provider
+    refusal: tuple[str, str] | None = None
     if target not in _MOCK_INSTANCES:
-        return _error("NOT_FOUND", f"no provider instance {target!r}", "provider")
-    if target == source:
-        return _error("FAILED_PRECONDITION", f"key is already on provider instance {source!r}", "provider")
+        refusal = ("NOT_FOUND", f"no provider instance {target!r}")
+    elif target == source:
+        refusal = ("FAILED_PRECONDITION", f"key is already on provider instance {source!r}")
     if method == "ValidateKeyOperation":
+        options = []
+        for s in [preferred] if preferred else list(_ALL_STRATEGIES):
+            option: dict[str, Any] = {"strategy": f"MIGRATION_STRATEGY_{s}", "feasible": False}
+            if refusal is not None:
+                option["infeasibility_reason"] = refusal[1]
+            elif s not in _MOCK_STRATEGIES:
+                option["infeasibility_reason"] = f"MIGRATION_STRATEGY_{s} is not implemented"
+            else:
+                option["feasible"] = True
+            options.append(option)
+        recommended, reason = _recommend(options)
         return _ok(
             {
-                "current_state": {"instance_id": source, "template_id": state["keys"][name]["template_id"]},
-                "options": [{"strategy": f"MIGRATION_STRATEGY_{s}", "feasible": True} for s in _MOCK_STRATEGIES],
-                "recommended_strategy": "MIGRATION_STRATEGY_PROVIDER_SWITCH",
+                "current_state": {
+                    "instance_id": source,
+                    "template_id": state["keys"][name]["template_id"],
+                    "extractable": bool(state["keys"][name].get("extractable", False)),
+                },
+                "options": options,
+                "recommended_strategy": recommended,
+                "recommendation_reason": reason,
             }
         )
-    strategy = str(request.get("strategy", "")).upper().removeprefix("MIGRATION_STRATEGY_")
-    if strategy not in _MOCK_STRATEGIES:
-        return _error("UNIMPLEMENTED", f"migration strategy {strategy!r} is not implemented", "server")
+    if refusal is not None:
+        return _error(refusal[0], refusal[1], "provider")
     state["keys"][name]["version"] += 1
     state["keys"][name]["provider"] = target
     after = copy.deepcopy(state["keys"][name])
@@ -615,7 +683,12 @@ def _dispatch(state: dict[str, Any], service: str, method: str, request: dict[st
         name = str(request.get("name", ""))
         if name not in state["keys"]:
             return _error("NOT_FOUND", f"key {name!r} not found", "storage")
-        version = int(request.get("version") or 0)
+        try:
+            version = int(request.get("version") or 0)
+        except (TypeError, ValueError):
+            return _error("INVALID_ARGUMENT", "version must be a whole number", "validation")
+        if version < 0:
+            return _error("INVALID_ARGUMENT", "version must not be negative", "validation")
         if version:
             recorded = state["key_versions"].get(name, {}).get(str(version))
             if recorded is None:
