@@ -79,7 +79,11 @@ async def replay(runbook: Runbook, registry: ActionRegistry, *, identities: bool
             results.append(StepResult(index, step, "", passed=True, skipped=True, detail="needs the demo identities"))
             continue
         spec = FORMS_BY_METHOD[(step.service, step.method)]
-        payload = build_request(spec, form_values(step, bundles))
+        try:
+            payload = build_request(spec, form_values(step, bundles))
+        except ValueError as exc:  # a step the forms refuse is that step's failure, not the replay's
+            results.append(StepResult(index, step, "INVALID_ARGUMENT", passed=False, detail=f"form refused: {exc}"))
+            continue
         action = registry.get(step.service, step.method)
         assert action.invoke is not None
         result = await action.invoke(payload)
@@ -117,16 +121,21 @@ async def _main(endpoint: str, keys: Iterable[str]) -> int:
     from citius_ui.workbench.actions import build_registry
 
     wanted = set(keys)
-    registry = build_registry(_clients(endpoint))
+    clients = _clients(endpoint)
+    registry = build_registry(clients)
     failures = 0
-    for runbook in RUNBOOKS:
-        if wanted and runbook.key not in wanted:
-            continue
-        print(f"\n{runbook.title}")
-        for r in await replay(runbook, registry):
-            mark = "skip" if r.skipped else ("ok  " if r.passed else "FAIL")
-            failures += not r.passed
-            print(f"  {mark} {r.index:2}. {r.step.method:<22} {r.step.title} {r.status}  {r.detail}".rstrip())
+    try:
+        for runbook in RUNBOOKS:
+            if wanted and runbook.key not in wanted:
+                continue
+            print(f"\n{runbook.title}")
+            for r in await replay(runbook, registry):
+                mark = "skip" if r.skipped else ("ok  " if r.passed else "FAIL")
+                failures += not r.passed
+                print(f"  {mark} {r.index:2}. {r.step.method:<22} {r.step.title} {r.status}  {r.detail}".rstrip())
+    finally:
+        for client in vars(clients).values():
+            await client.close()
     return 1 if failures else 0
 
 

@@ -187,3 +187,14 @@ def test_replay_skips_identity_denials_without_the_demo_identities() -> None:
         i for i, s in enumerate(R7_DUTIES.steps, 1) if s.expected.value in ("method_denied", "resource_denied")
     }
     assert all(r.passed for r in results)
+
+
+def test_replay_reports_a_step_the_forms_refuse_and_goes_on() -> None:
+    import dataclasses
+
+    timeline = next(s for s in R4_AGILITY.steps if s.method == "ReadKey")
+    bad = dataclasses.replace(timeline, request={"name": "demo-r4-key", "version": "two"})
+    runbook = dataclasses.replace(R4_AGILITY, steps=(bad, timeline))
+    results = asyncio.run(replay(runbook, _fake_registry({}, [])))
+    assert [r.passed for r in results] == [False, True]
+    assert results[0].detail.startswith("form refused")
