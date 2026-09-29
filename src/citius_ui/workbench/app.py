@@ -268,7 +268,7 @@ CSS = """
    (unrelated to the page's own light/dark toggle), so its token colors are
    only readable against a dark background. Force that background rather
    than the page theme's, so the two can never end up light-on-light. */
-.output-zone .cm-editor { background: #1e1e1e !important; border-radius: 6px !important; }
+.output-zone .cm-editor, .step-response .cm-editor { background: #1e1e1e !important; border-radius: 6px !important; }
 
 /* Services render as flat cards in a responsive grid capped at two columns
    (auto-fit picks 1 vs 2 tracks from the viewport; a card can opt into
@@ -374,6 +374,25 @@ _VERDICT = {
     StepState.DIFFERS: "a value differs from what the step expects",
     StepState.FAILED: "not as expected",
 }
+
+
+_NO_RESPONSE_LABEL = "Response"
+
+
+def _response_label(result: StepResult) -> str:
+    return f"Response · step {result.index} ({result.step.method}, {result.status or 'not sent'})"
+
+
+def _response_json(result: StepResult) -> str:
+    """What a step sent and got back, as the Workbench's output panel shows it."""
+    body: dict[str, Any] = {"status": result.status or "not sent"}
+    if result.message:
+        body["message" if result.status == "OK" else "error"] = result.message
+    if not result.status:
+        body["error"] = result.detail
+    body["request"] = dict(result.request)
+    body["response"] = dict(result.response)
+    return json.dumps(body, indent=2, default=str)
 
 
 def _diagram(runbook: Runbook, results: dict[int, StepResult]) -> str:
@@ -732,6 +751,12 @@ def build_workbench(
             prefill = gr.Button("Prefill in Workbench", variant="secondary", scale=1)
             reset = gr.Button("Reset", variant="secondary", scale=1)
         outcome = gr.Markdown("")
+        # The exact request and response of a step, for a closer look. It shows
+        # the step just run, or the one picked in the step list if it has run.
+        with gr.Accordion(
+            _NO_RESPONSE_LABEL, open=False, elem_classes=["rpc-accordion", "step-response"]
+        ) as response_box:
+            response_view = gr.Code(value="", language="json", interactive=False, show_label=False)
         diagram_view = gr.Markdown(_diagram(runbook, {}), elem_classes=["runbook-diagram"])
 
         def _prefill(label: str) -> list[Any]:
@@ -758,13 +783,15 @@ def build_workbench(
             number = numbers[labels.index(label)] if label in labels else numbers[0]
             step = runbook.steps[number - 1]
             unchanged = (gr.update(), gr.update())
+            kept = (gr.update(), gr.update())
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
-                return (*unchanged, "**No active session.** Sign in again to run steps.", state, gr.update())
+                return (*unchanged, "**No active session.** Sign in again to run steps.", state, gr.update(), *kept)
             try:
                 clients = _open_clients(session)
             except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
-                return (*unchanged, f"**UNAVAILABLE** · could not create a Citius client: {exc}", state, gr.update())
+                message = f"**UNAVAILABLE** · could not create a Citius client: {exc}"
+                return (*unchanged, message, state, gr.update(), *kept)
             executor = ActionExecutor(history)
             context = ExecutionContext(
                 session_id=session.history_id,
@@ -795,15 +822,35 @@ def build_workbench(
                 _step_outcome(result),
                 {"results": results, "bundles": bundles},
                 gr.update(value=chosen),
+                gr.update(label=_response_label(result)),
+                _response_json(result),
             )
 
         def _reset_runbook() -> tuple[Any, ...]:
-            return goal_card(runbook), _diagram(runbook, {}), "", None, gr.update(value=labels[0])
+            return (
+                goal_card(runbook),
+                _diagram(runbook, {}),
+                "",
+                None,
+                gr.update(value=labels[0]),
+                gr.update(label=_NO_RESPONSE_LABEL),
+                "",
+            )
+
+        def _show_response(label: str, state: dict[str, Any] | None) -> tuple[Any, Any]:
+            """Picking a step that has run shows its response; any other pick leaves the view as it is."""
+            number = numbers[labels.index(label)] if label in labels else None
+            result = (state or {}).get("results", {}).get(number)
+            if result is None:
+                return gr.update(), gr.update()
+            return gr.update(label=_response_label(result)), _response_json(result)
 
         prefill.click(_prefill, inputs=picker, outputs=outputs)
-        views = [goal_view, diagram_view, outcome, run_state, picker]
+        views = [goal_view, diagram_view, outcome, run_state, picker, response_box, response_view]
         run.click(_run_runbook_step, inputs=[picker, run_state], outputs=views)
         reset.click(_reset_runbook, outputs=views)
+        # .input fires only when a person picks, not when Run step moves the picker on.
+        picker.input(_show_response, inputs=[picker, run_state], outputs=[response_box, response_view])
 
     def _render_unavailable_card(service: str) -> None:
         """Render a muted, still-expandable card listing a service's contract RPCs.

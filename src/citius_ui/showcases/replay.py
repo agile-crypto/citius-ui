@@ -20,7 +20,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
@@ -56,6 +56,10 @@ class StepResult:
     status: str
     state: StepState
     detail: str = ""
+    # What was sent and what came back, for a closer look; empty when no call was made.
+    request: Mapping[str, Any] = field(default_factory=dict)
+    response: Mapping[str, Any] = field(default_factory=dict)
+    message: str = ""
 
     @property
     def passed(self) -> bool:
@@ -118,7 +122,16 @@ async def run_step(
             bundles[step.bundle] = json.dumps(artifacts[0].bundle())
     state, why = judge(step, result.status.value, result.response)
     detail = "; ".join(part for part in (why, result.message) if part)
-    return StepResult(index, step, result.status.value, state, detail)
+    return StepResult(
+        index,
+        step,
+        result.status.value,
+        state,
+        detail,
+        request=payload,
+        response=dict(result.response or {}),
+        message=result.message,
+    )
 
 
 async def replay(runbook: Runbook, registry: ActionRegistry, *, identities: bool = False) -> list[StepResult]:

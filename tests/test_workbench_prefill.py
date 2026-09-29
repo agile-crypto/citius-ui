@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -61,7 +62,7 @@ def _ok_registry(_clients: Any) -> ActionRegistry:
     for service, method in R4_AGILITY.required_actions():
 
         async def invoke(request: dict[str, Any]) -> RpcResult:
-            return RpcResult(status=ResultStatus.OK)
+            return RpcResult(status=ResultStatus.OK, message="done", response={"echo": request.get("name")})
 
         registry.register(
             RpcAction(service=service, method=method, permission="", availability=Availability.AVAILABLE, invoke=invoke)
@@ -91,10 +92,16 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     request = SimpleNamespace(cookies={config.session_cookie_name: session.id})
     first = run.inputs[0].choices[0][0]
 
-    goal, diagram, outcome, state, picker = asyncio.run(run.fn(first, None, request))
+    goal, diagram, outcome, state, picker, box, shown = asyncio.run(run.fn(first, None, request))
     assert f"rect {FILL[StepState.PASSED]}" in diagram and "Green: as expected" in diagram
     assert "**Step 1** (CISO, CreateCryptoPolicy): OK, as expected." in outcome
     assert state["results"][1].state is StepState.PASSED
+    # The exact request and response are there for a closer look.
+    assert box["label"] == "Response · step 1 (CreateCryptoPolicy, OK)"
+    body = json.loads(shown)
+    assert body["status"] == "OK" and body["message"] == "done"
+    assert body["request"]["name"] == "demo-r4-policy"
+    assert body["response"] == {"echo": "demo-r4-policy"}
     # The picker moves on to the next step, and the call is in the session's history.
     assert picker["value"].startswith("2.")
     [record] = history.list(session.history_id)
@@ -102,14 +109,23 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     assert _FakeClients.closed >= 1
 
     # Step 2 expects a template in the response; an empty OK differs.
-    _, diagram, outcome, state, picker = asyncio.run(run.fn(picker["value"], state, request))
+    _, diagram, outcome, state, picker, box, shown = asyncio.run(run.fn(picker["value"], state, request))
     assert f"rect {FILL[StepState.DIFFERS]}" in diagram and "a value differs" in outcome
     assert picker["value"].startswith("2.")  # it stays on the step that did not pass
+    assert box["label"].startswith("Response · step 2")
+
+    # Picking step 1 again shows its response; picking one not run leaves the view alone.
+    show = _handler(blocks, "_show_response", "Create policy demo-r4-policy")
+    box, shown = show.fn(first, state)
+    assert box["label"].startswith("Response · step 1") and json.loads(shown)["request"]["name"] == "demo-r4-policy"
+    not_run = run.inputs[0].choices[5][0]
+    assert show.fn(not_run, state) == ({"__type__": "update"}, {"__type__": "update"})
 
     resets = [f for f in blocks.fns.values() if getattr(f.fn, "__name__", "") == "_reset_runbook"]
     assert len(resets) == len(RUNBOOKS)
-    goal, diagram, outcome, state, _ = resets[3].fn()
+    goal, diagram, outcome, state, _, box, shown = resets[3].fn()
     assert state is None and outcome == "" and FILL[StepState.PASSED] not in diagram
+    assert (box["label"], shown) == ("Response", "")
 
 
 def test_each_runbooks_text_sits_in_a_closed_details_section(tmp_path: Path) -> None:
@@ -129,5 +145,5 @@ def test_run_step_without_a_session_changes_nothing(tmp_path: Path) -> None:
     blocks = build_workbench(config, SessionStore(), MemoryHistoryStore())
     run = _handler(blocks, "_run_runbook_step", "Create policy demo-r4-policy")
     request = SimpleNamespace(cookies={})
-    _, _, outcome, state, _ = asyncio.run(run.fn(run.inputs[0].choices[0][0], None, request))
+    _, _, outcome, state, *_ = asyncio.run(run.fn(run.inputs[0].choices[0][0], None, request))
     assert "No active session" in outcome and state == {"results": {}, "bundles": {}}
