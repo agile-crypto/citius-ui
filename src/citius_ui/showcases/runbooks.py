@@ -655,16 +655,16 @@ R7_DUTIES = Runbook(
     ),
     steps=(
         _create_policy(
-            "demo-signing-policy",
+            "demo-r7-policy",
             _policy(["ecdsa-p256-sha256-der"], ["create_key", "read_key", "sign", "verify"]),
             "Sign in as CISO in browser one.",
         ),
         _create_key(
             "Create the signing key",
-            {"name": "demo-signing-key", "policy": "demo-signing-policy", "template_id": "ecdsa-p256-sha256-der"},
+            {"name": "demo-r7-sign", "policy": "demo-r7-policy", "template_id": "ecdsa-p256-sha256-der"},
             "In browser two, as the producer.",
         ),
-        _sign("demo-signing-key", "r7-sig", "Copy the bundle to browser three."),
+        _sign("demo-r7-sign", "r7-sig", "Copy the bundle to browser three."),
         RunbookStep(
             persona="Producer",
             title="Try to verify",
@@ -672,11 +672,11 @@ R7_DUTIES = Runbook(
             method="Verify",
             expected=ExpectedOutcome.METHOD_DENIED,
             explanation="Paste the producer's own bundle.",
-            request={"key_name": "demo-signing-key"},
+            request={"key_name": "demo-r7-sign"},
             bundle="r7-sig",
             hint="The producer lacks citius:crypto:verify.",
         ),
-        _verify("demo-signing-key", "r7-sig", "In browser three, as the consumer."),
+        _verify("demo-r7-sign", "r7-sig", "In browser three, as the consumer."),
         RunbookStep(
             persona="Consumer",
             title="Try to sign",
@@ -684,7 +684,7 @@ R7_DUTIES = Runbook(
             method="Sign",
             expected=ExpectedOutcome.METHOD_DENIED,
             explanation="The consumer's identity has no signing permission.",
-            request={"key_name": "demo-signing-key", "message": "Consumer must not sign"},
+            request={"key_name": "demo-r7-sign", "message": "Consumer must not sign"},
             hint="The consumer lacks citius:crypto:sign.",
         ),
         RunbookStep(
