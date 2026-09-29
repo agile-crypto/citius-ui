@@ -859,8 +859,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "template_id",
                 "Template ID",
                 placeholder="aes-256-gcm-128-96",
-                optional=True,
-                help="The first match is the instance CreateKey would choose for this template.",
+                help=(
+                    "Required. The first match is the instance CreateKey would choose for this template, "
+                    "unless the key's policy adds provider requirements (MatchProviders does not apply policy)."
+                ),
             ),
             *_provider_requirement_fields(),
         ),

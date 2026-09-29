@@ -1325,9 +1325,13 @@ def _implementation_summary(props: Any) -> dict[str, Any]:
 
 
 def unmet_requirements(requirements: Any, props: Any) -> list[str]:
-    """Name each hard requirement ``props`` fails, mirroring the server's check.
+    """Name each hard requirement ``props`` fails: a client-side copy of the
+    server's check (``provider.Unmet`` in citius-core).
 
-    ``requirements`` is a ProviderRequirements proto and ``props`` an
+    It is a hint, not the server's answer: MatchProviders does not yet say
+    why an instance was left out, so this re-derives it and can drift from
+    the server. Replace it with the server's reasons once the API carries
+    them. ``requirements`` is a ProviderRequirements proto and ``props`` an
     ImplementationProperties proto. An empty list means every hard
     requirement is met.
     """
@@ -1433,15 +1437,19 @@ def _register_providers(registry: ActionRegistry, clients: CitiusClients) -> Non
         )
 
     async def match_providers(request: dict[str, Any]) -> RpcResult:
-        """Rank the instances for a template, and say why every other one lost."""
+        """Rank the instances for a template, with a hint of why every other one lost.
+
+        The ranking is the server's. The reasons for an exclusion are the
+        UI's hint (see :func:`unmet_requirements`), and are left out, not
+        failed on, when the instances cannot be listed.
+        """
         requirements = _provider_requirements(request)
-        template_id = str(request.get("template_id") or "").strip()
+        template_id = _require_text(request, "template_id")
         try:
             matches = await clients.providers.match_providers(
                 template_id=template_id,
                 requirements=requirements,
             )
-            everyone = await clients.providers.list_provider_instances()
         except CitiusError as error:
             return error_result(error)
         required = requirements.to_proto() if requirements is not None else common_impl.ProviderRequirements()
@@ -1455,19 +1463,37 @@ def _register_providers(registry: ActionRegistry, clients: CitiusClients) -> Non
             for n, m in enumerate(matches.matches, start=1)
         ]
         chosen = {row["instance_id"] for row in ranked}
-        excluded = []
-        for instance in everyone.instances:
-            if instance.instance_id in chosen:
-                continue
-            reasons = unmet_requirements(required, instance.implementation_override)
-            if not reasons:
-                reasons = [f"does not support template {template_id}" if template_id else "not selectable"]
-            excluded.append({"instance_id": instance.instance_id, "why_not": reasons})
-        message = f"CreateKey would choose {ranked[0]['instance_id']}" if ranked else "no instance can hold this key"
+        excluded: list[dict[str, Any]] | None = None
+        note = "why_not is a client-side hint; the server does not yet report its reasons"
+        try:
+            everyone = await clients.providers.list_provider_instances()
+        except CitiusError as error:
+            note = f"exclusion reasons unavailable: listing instances failed ({error})"
+        else:
+            excluded = []
+            for instance in everyone.instances:
+                if instance.instance_id in chosen:
+                    continue
+                # Only the template can exclude an instance that meets every
+                # requirement.
+                reasons = unmet_requirements(required, instance.implementation_override) or [
+                    f"does not support template {template_id}"
+                ]
+                excluded.append({"instance_id": instance.instance_id, "why_not": reasons})
+        message = (
+            f"CreateKey would choose {ranked[0]['instance_id']}, unless the key's policy adds provider requirements"
+            if ranked
+            else "no instance can hold this key"
+        )
         return RpcResult(
             status=ResultStatus.OK,
             message=message,
-            response={"ranked": ranked, "excluded": excluded, "full_response": _full_response(matches)},
+            response={
+                "ranked": ranked,
+                "excluded": excluded,
+                "note": note,
+                "full_response": _full_response(matches),
+            },
         )
 
     for method, invoke in (

@@ -150,7 +150,8 @@ def test_match_providers_explains_every_loser() -> None:
         registry, "ProviderService", "MatchProviders", {"template_id": "aes-256-gcm", "require_fips_140": True}
     )
     assert result.status is ResultStatus.OK
-    assert result.message == "CreateKey would choose openssl-fips"
+    assert result.message.startswith("CreateKey would choose openssl-fips, unless the key's policy")
+    assert "hint" in result.response["note"]
     assert [row["instance_id"] for row in result.response["ranked"]] == ["openssl-fips"]
     assert result.response["ranked"][0]["fips_140"] == "FIPS_140_LEVEL_1"
     assert {row["instance_id"]: row["why_not"] for row in result.response["excluded"]} == {
@@ -208,3 +209,30 @@ def test_catalogue_reads_are_implemented_and_writes_are_not() -> None:
     assert set(IMPLEMENTED["ProviderService"]).isdisjoint(CONTRACT_ONLY["ProviderService"])
     assert "RegisterProviderInstance" in CONTRACT_ONLY["ProviderService"]
     assert "AlgorithmDiscoveryService" not in CONTRACT_ONLY
+
+
+class _ProvidersListingFails(_Providers):
+    async def list_provider_instances(self, **_: Any) -> ListProviderInstancesResponse:
+        import grpc
+        from citius_sdk.errors import UnavailableError
+
+        raise UnavailableError(grpc.StatusCode.UNAVAILABLE, "listing is down")
+
+
+def test_match_providers_keeps_the_ranking_when_listing_fails() -> None:
+    registry = ActionRegistry()
+    _register_providers(registry, SimpleNamespace(providers=_ProvidersListingFails()))  # type: ignore[arg-type]
+    result = _invoke(registry, "ProviderService", "MatchProviders", {"template_id": "aes-256-gcm"})
+    assert result.status is ResultStatus.OK
+    assert result.response["ranked"]
+    assert result.response["excluded"] is None
+    assert "listing instances failed" in result.response["note"]
+
+
+def test_match_providers_requires_a_template() -> None:
+    registry = ActionRegistry()
+    providers = _Providers()
+    _register_providers(registry, SimpleNamespace(providers=providers))  # type: ignore[arg-type]
+    result = _invoke(registry, "ProviderService", "MatchProviders", {})
+    assert result.status is ResultStatus.INVALID_ARGUMENT
+    assert providers.match_requests == []
