@@ -112,6 +112,18 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     assert state is None and outcome == "" and FILL[StepState.PASSED] not in diagram
 
 
+def test_each_runbooks_text_sits_in_a_closed_details_section(tmp_path: Path) -> None:
+    import gradio as gr
+
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
+    blocks = build_workbench(config, SessionStore(), MemoryHistoryStore())
+    details = [b for b in blocks.blocks.values() if isinstance(b, gr.Accordion) and b.label == "Details"]
+    assert len(details) == len(RUNBOOKS)
+    assert not any(d.open for d in details)
+    texts = [child.value for d in details for child in d.children if isinstance(child, gr.Markdown)]
+    assert [any(rb.summary in text for text in texts) for rb in RUNBOOKS] == [True] * len(RUNBOOKS)
+
+
 def test_run_step_without_a_session_changes_nothing(tmp_path: Path) -> None:
     config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
     blocks = build_workbench(config, SessionStore(), MemoryHistoryStore())

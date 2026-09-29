@@ -888,7 +888,10 @@ def build_workbench(
                     for runbook in RUNBOOKS:
                         with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]):
                             _render_runbook(runbook, tabs)
-                            gr.Markdown(render_markdown(runbook, _resolver))
+                            # The summary and every step's explanation, hint and
+                            # what to look for: there when wanted, hidden otherwise.
+                            with gr.Accordion("Details", open=False, elem_classes=["rpc-accordion"]):
+                                gr.Markdown(render_markdown(runbook, _resolver))
 
         def _identity(request: gr.Request) -> tuple[str, str]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
