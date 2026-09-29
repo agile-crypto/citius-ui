@@ -38,6 +38,7 @@ from citius_ui.grpc_client.serialization import (
     invalid_result,
     unexpected_result,
 )
+from citius_ui.showcases.inventory import template_quantum_safe
 
 CONTRACT_ONLY: dict[str, list[str]] = {
     "KeyManagementService": [
@@ -1201,7 +1202,11 @@ def _register_policy(registry: ActionRegistry, clients: CitiusClients) -> None:
 
 
 def _template_summary(info: Any) -> dict[str, Any]:
-    """One catalogue row: what a template is and how quantum-safe it is."""
+    """One catalogue row: what a template is and how quantum-safe it is.
+
+    ``quantum_safe`` is the catalogue's scope flag, as in the inventory
+    (:func:`template_quantum_safe`); the NIST level is its own column.
+    """
     quantum_level = info.cyclonedx.nist_quantum_security_level
     return {
         "template_id": info.template_id,
@@ -1210,7 +1215,7 @@ def _template_summary(info: Any) -> dict[str, Any]:
         "standards": list(info.standards),
         "classical_security_bits": info.cyclonedx.classical_security_level,
         "nist_quantum_security_level": quantum_level,
-        "quantum_safe": quantum_level > 0,
+        "quantum_safe": template_quantum_safe(info),
     }
 
 

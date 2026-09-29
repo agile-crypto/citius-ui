@@ -42,6 +42,7 @@ class _Discovery:
         response = ListTemplatesResponse()
         pq = response.templates.add(template_id="ml-dsa-65", status=TemplateStatus.TEMPLATE_STATUS_ACTIVE)
         pq.cyclonedx.nist_quantum_security_level = 3
+        pq.scoped_capabilities.add().scope.signature.security.quantum_safe = True
         response.templates.add(template_id="ecdsa-p256-sha256-der", standards=["FIPS 186-5"])
         return response
 

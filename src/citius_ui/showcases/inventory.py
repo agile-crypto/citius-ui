@@ -70,7 +70,12 @@ class InventoryRow:
 
     @property
     def fips_ready(self) -> bool:
-        """A FIPS-approved algorithm on an instance that reports a FIPS 140 level."""
+        """A FIPS-approved algorithm on an instance that reports a FIPS 140 level.
+
+        It says where the key is held, not how its material was made: a key
+        generated elsewhere and migrated onto a FIPS instance counts, though
+        a policy requiring approved generation would refuse it.
+        """
         return self.fips_approved_algorithm is True and self.provider_fips_140 not in (None, "not certified")
 
 
@@ -111,6 +116,22 @@ def _scope_security(template: Any) -> list[Any]:
     return found
 
 
+def template_quantum_safe(template: Any) -> bool:
+    """Whether the catalogue marks a scope of ``template`` quantum-safe.
+
+    This is the flag the server matches when a caller asks for
+    ``quantum_safe`` (ListTemplates' filter, CreateKey's selection), so it is
+    the UI's one definition of "quantum-safe" for a template. The CycloneDX
+    NIST quantum security level is reported beside it, not in its place.
+    """
+    return any(s.quantum_safe for s in _scope_security(template))
+
+
+def template_fips_approved(template: Any) -> bool:
+    """Whether the catalogue marks a scope of ``template`` FIPS-approved."""
+    return any(s.fips_approved for s in _scope_security(template))
+
+
 def _fips_label(instance: Any) -> str:
     fips = instance.implementation_override.fips_140
     return common_impl.Fips140Level.Name(fips.level) if fips.certified else "not certified"
@@ -141,9 +162,8 @@ def build_inventory(
         template = templates.get(key.template_id)
         instance = instances.get(key.provider)
         if template is not None:
-            security = _scope_security(template)
-            quantum_safe: bool | None = any(s.quantum_safe for s in security)
-            fips_approved: bool | None = any(s.fips_approved for s in security)
+            quantum_safe: bool | None = template_quantum_safe(template)
+            fips_approved: bool | None = template_fips_approved(template)
             algorithm: str | None = template.cyclonedx.name or template.display_name or key.template_id
             nist_level: int | None = template.cyclonedx.nist_quantum_security_level
         else:
