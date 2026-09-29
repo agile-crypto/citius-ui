@@ -206,7 +206,14 @@ def test_replay_skips_identity_denials_without_the_demo_identities() -> None:
             return RpcResult(status=ResultStatus.OK, response={"valid": True})
 
         registry.register(
-            RpcAction(service=service, method=method, permission="", availability=Availability.AVAILABLE, invoke=invoke)
+            RpcAction(
+                service=service,
+                method=method,
+                permission="",
+                availability=Availability.AVAILABLE,
+                invoke=invoke,
+                extract_artifacts=lambda request, _result: [_Artifact({"key_name": request["key_name"]})],
+            )
         )
     results = asyncio.run(replay(R7_DUTIES, registry))
     skipped = {r.index for r in results if r.skipped}
@@ -256,3 +263,13 @@ def test_run_step_goes_through_the_given_invoke_and_keeps_the_bundle() -> None:
     second = asyncio.run(run_step(5, verify, registry, bundles, invoke=invoke))
     assert (second.index, second.state) == (5, StepState.PASSED)
     assert seen == ["Sign", "Verify"]
+
+
+def test_run_step_refuses_a_consumer_step_before_its_bundle_exists() -> None:
+    async def invoke(action: RpcAction, payload: dict[str, Any]) -> RpcResult:
+        raise AssertionError("no call without the bundle")
+
+    verify = R4_AGILITY.steps[4]
+    result = asyncio.run(run_step(5, verify, _fake_registry({}, []), {}, invoke=invoke))
+    assert (result.status, result.state) == ("", StepState.FAILED)
+    assert "no r4-ecdsa bundle yet" in result.detail

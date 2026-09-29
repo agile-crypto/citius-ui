@@ -98,8 +98,13 @@ async def run_step(
     """Run one step the way the UI sends it, and judge the result.
 
     A consumer step gets the named bundle from ``bundles`` pasted in; a
-    producer step that succeeds stores its bundle there under its name.
+    producer step that succeeds stores its bundle there under its name. A
+    consumer step whose bundle does not exist yet fails without a call.
     """
+    if step.bundle and not step.copy_bundle and step.bundle not in bundles:
+        return StepResult(
+            index, step, "", StepState.FAILED, f"no {step.bundle} bundle yet: run the step that keeps it first"
+        )
     spec = FORMS_BY_METHOD[(step.service, step.method)]
     try:
         payload = build_request(spec, form_values(step, bundles))
@@ -111,8 +116,9 @@ async def run_step(
         artifacts = action.extract_artifacts(payload, result)
         if artifacts:
             bundles[step.bundle] = json.dumps(artifacts[0].bundle())
-    state, detail = judge(step, result.status.value, result.response)
-    return StepResult(index, step, result.status.value, state, detail or result.message)
+    state, why = judge(step, result.status.value, result.response)
+    detail = "; ".join(part for part in (why, result.message) if part)
+    return StepResult(index, step, result.status.value, state, detail)
 
 
 async def replay(runbook: Runbook, registry: ActionRegistry, *, identities: bool = False) -> list[StepResult]:

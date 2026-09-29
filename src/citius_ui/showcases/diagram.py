@@ -42,6 +42,9 @@ _ENTITY = {"#": "#35;", ";": "#59;", "`": "'"}
 
 _MAX_DETAIL = 60
 
+# Draw the actors once, at the top: the runbooks are tall enough already.
+_INIT = '%%{init: {"sequence": {"mirrorActors": false}}}%%'
+
 
 def _text(value: str) -> str:
     return "".join(_ENTITY.get(char, char) for char in value)
@@ -90,6 +93,8 @@ def _reply(step: RunbookStep, result: StepResult | None) -> tuple[str, bool]:
     if result.state is StepState.DIFFERS:
         detail = result.detail if len(result.detail) <= _MAX_DETAIL else result.detail[: _MAX_DETAIL - 1] + "…"
         return f"differs: {detail}", False
+    if not result.status:
+        return "not sent", False
     return f"got {result.status}", result.status != "OK"
 
 
@@ -99,7 +104,7 @@ def sequence_diagram(runbook: Runbook, results: Results | None = None) -> str:
     personas = list(dict.fromkeys(step.persona for step in runbook.steps))
     actor = {persona: f"a{number}" for number, persona in enumerate(personas)}
     upcoming = next_step(runbook, results)
-    lines = ["sequenceDiagram"]
+    lines = [_INIT, "sequenceDiagram"]
     lines += [f"  actor {actor[persona]} as {_text(persona)}" for persona in personas]
     lines.append("  participant S as Citius")
     for index, step in enumerate(runbook.steps, start=1):

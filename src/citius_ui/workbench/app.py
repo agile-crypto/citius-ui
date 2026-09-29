@@ -29,17 +29,18 @@ import gradio as gr
 from citius_sdk.errors import CitiusError
 
 from citius_ui.actions.executor import ActionExecutor, ExecutionContext
-from citius_ui.actions.model import Availability
-from citius_ui.auth.sessions import SessionStore
+from citius_ui.actions.model import Availability, RpcAction, RpcResult
+from citius_ui.auth.sessions import Session, SessionStore
 from citius_ui.config import AppConfig
 from citius_ui.grpc_client.client import CitiusClients
 from citius_ui.grpc_client.serialization import error_result
 from citius_ui.history.memory_store import MemoryHistoryStore
+from citius_ui.showcases.diagram import LEGEND, goal_card, next_step, sequence_diagram
 from citius_ui.showcases.inventory import collect as collect_inventory
 from citius_ui.showcases.inventory import render_markdown as render_inventory
 from citius_ui.showcases.inventory import to_cyclonedx
-from citius_ui.showcases.model import Runbook
-from citius_ui.showcases.replay import form_values
+from citius_ui.showcases.model import ExpectedOutcome, Runbook, StepState
+from citius_ui.showcases.replay import StepResult, form_values, run_step
 from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
 from citius_ui.workbench.catalogue import choices_for, load_choices
@@ -187,6 +188,19 @@ CSS = """
 .rpc-accordion > button, .rpc-accordion > .label-wrap {
     font-weight: 600 !important; color: var(--citius-rpc-ink) !important; padding: 9px 13px !important; }
 .logout-button { max-width: 140px; align-self: flex-end; }
+
+/* A runbook's goal: the claim, before and after, and its proofs. A proof
+   reads muted until its steps have gone as expected, then in full ink (the
+   card renders it in bold). Gradio puts the class on both the block and
+   its inner .prose, so the frame goes on the block only. */
+.block.goal-card { border-left: 4px solid var(--citius-accent-teal) !important;
+             background: var(--citius-surface-open) !important;
+             padding: 10px 14px !important; border-radius: 0 8px 8px 0 !important; }
+.goal-card li { color: var(--citius-muted-ink) !important; }
+.goal-card li strong { color: var(--citius-ink) !important; }
+/* Mermaid stretches a diagram to the full width, which makes a long runbook
+   several screens tall; cap it so it scales down instead. */
+.runbook-diagram .mermaid svg { max-width: 860px !important; }
 
 /* Method, Request, Examples, and Output each sit in their own bordered,
    tinted zone so the four read as clearly separate regions within a service
@@ -355,6 +369,36 @@ def _render_response(
     return json.dumps(body, indent=2)
 
 
+_VERDICT = {
+    StepState.PASSED: "as expected",
+    StepState.DIFFERS: "a value differs from what the step expects",
+    StepState.FAILED: "not as expected",
+}
+
+
+def _diagram(runbook: Runbook, results: dict[int, StepResult]) -> str:
+    """The runbook's sequence diagram, with what its colours mean above it."""
+    return f"_{LEGEND}_\n\n{sequence_diagram(runbook, results)}"
+
+
+def _step_outcome(result: StepResult) -> str:
+    """One line on how a step went, and what to do when it went wrong."""
+    step = result.step
+    verdict = _VERDICT.get(result.state, result.state.value)
+    lines = [f"**Step {result.index}** ({step.persona}, {step.method}): {result.status or 'no call'}, {verdict}."]
+    if result.detail:
+        lines.append("`" + result.detail.replace("`", "'") + "`")
+    if result.state is StepState.FAILED:
+        if result.status == "PERMISSION_DENIED" and step.expected is ExpectedOutcome.SUCCESS:
+            lines.append(f"This step is for the {step.persona}: run it in the {step.persona}'s browser.")
+        elif result.status in ("NOT_FOUND", "ALREADY_EXISTS"):
+            lines.append(
+                "An earlier step may not have run, or keys from an earlier run exist. "
+                "Run the earlier steps, or Reset and use a fresh server."
+            )
+    return "  \n".join(lines)
+
+
 def _render_input(spec: FormField) -> gr.components.Component:
     # Only append "(optional)" when the label does not already convey it, and
     # never for checkboxes (an unchecked box already reads as "not set").
@@ -397,6 +441,10 @@ def build_workbench(
     form_inputs: dict[tuple[str, str], list[gr.components.Component]] = {}
     service_cards: dict[str, tuple[gr.Accordion, gr.Dropdown]] = {}
 
+    def _open_clients(session: Session) -> CitiusClients:
+        """Clients that call the server with the session's token."""
+        return CitiusClients(config, make_provider(session.id))
+
     def _run_form(
         spec: RpcFormSpec,
     ) -> Any:
@@ -422,7 +470,7 @@ def build_workbench(
                 )
 
             try:
-                clients = CitiusClients(config, make_provider(session.id))
+                clients = _open_clients(session)
             except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
                 return (
                     "UNAVAILABLE",
@@ -594,7 +642,7 @@ def build_workbench(
         if session is None:
             return "**No active session.** Sign in again.", [], hidden
         try:
-            clients = CitiusClients(config, make_provider(session.id))
+            clients = _open_clients(session)
         except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
             return f"**UNAVAILABLE** · could not create a Citius client: {exc}", [], hidden
         try:
@@ -648,18 +696,25 @@ def build_workbench(
                         "\n".join(f"- `{method_name}` — {_AVAILABILITY_BADGE[avail]}" for method_name, avail in pending)
                     )
 
-    def _render_prefill(runbook: Runbook, tabs: gr.Tabs) -> None:
-        """A step picker whose Prefill button loads the step's request into the Workbench.
+    def _render_runbook(runbook: Runbook, tabs: gr.Tabs) -> None:
+        """The runbook's goal card and sequence diagram, and a step picker to run or prefill.
 
-        It switches to the Workbench tab, opens the step's service card,
-        selects its method, and sets its form. Only RPCs with a form can be
-        prefilled; the outputs are fixed when the page is built, so they cover
-        every card and form the runbook uses.
+        **Run step** sends the step's request through the same executor as
+        the Workbench, so the call lands in the session's history, and colours
+        the step by its result. Results and bundles live in a ``gr.State``, so
+        each browser tab has its own, and only runs from here count: calls
+        made in the Workbench do not change the diagram. **Reset** clears them.
+
+        **Prefill** switches to the Workbench tab, opens the step's service
+        card, selects its method, and sets its form. Only RPCs with a form
+        can be prefilled; the outputs are fixed when the page is built, so
+        they cover every card and form the runbook uses.
         """
         steps = [step for step in runbook.steps if (step.service, step.method) in form_inputs]
         if not steps:
             return
-        labels = [f"{runbook.steps.index(step) + 1}. {step.persona} · {step.title}" for step in steps]
+        numbers = [runbook.steps.index(step) + 1 for step in steps]
+        labels = [f"{number}. {step.persona} · {step.title}" for number, step in zip(numbers, steps, strict=True)]
         services = sorted({step.service for step in steps})
         rpcs = sorted({(step.service, step.method) for step in steps})
         outputs: list[Any] = [tabs]
@@ -667,9 +722,17 @@ def build_workbench(
             outputs.extend(service_cards[service])
         for rpc in rpcs:
             outputs.extend(form_inputs[rpc])
+        goal_view = gr.Markdown(goal_card(runbook), elem_classes=["goal-card"])
+        run_state = gr.State(value=None)
+        # The controls and the last result sit above the diagram, which can be
+        # taller than the screen.
         with gr.Row():
             picker = gr.Dropdown(choices=labels, value=labels[0], label="Step", scale=4)
+            run = gr.Button("Run step", variant="primary", scale=1)
             prefill = gr.Button("Prefill in Workbench", variant="secondary", scale=1)
+            reset = gr.Button("Reset", variant="secondary", scale=1)
+        outcome = gr.Markdown("")
+        diagram_view = gr.Markdown(_diagram(runbook, {}), elem_classes=["runbook-diagram"])
 
         def _prefill(label: str) -> list[Any]:
             step = steps[labels.index(label)] if label in labels else steps[0]
@@ -690,7 +753,57 @@ def build_workbench(
                     updates.append(gr.update(value=value))
             return updates
 
+        async def _run_runbook_step(label: str, state: dict[str, Any] | None, request: gr.Request) -> tuple[Any, ...]:
+            state = state or {"results": {}, "bundles": {}}
+            number = numbers[labels.index(label)] if label in labels else numbers[0]
+            step = runbook.steps[number - 1]
+            unchanged = (gr.update(), gr.update())
+            session = sessions.get(request.cookies.get(config.session_cookie_name))
+            if session is None:
+                return (*unchanged, "**No active session.** Sign in again to run steps.", state, gr.update())
+            try:
+                clients = _open_clients(session)
+            except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
+                return (*unchanged, f"**UNAVAILABLE** · could not create a Citius client: {exc}", state, gr.update())
+            executor = ActionExecutor(history)
+            context = ExecutionContext(
+                session_id=session.history_id,
+                subject=session.subject,
+                endpoint=config.citius_endpoint,
+                scenario_run_id=f"{runbook.key}:{number}",
+            )
+
+            async def invoke(action: RpcAction, payload: dict[str, Any]) -> RpcResult:
+                result, _ = await executor.execute(action, context, payload)
+                return result
+
+            bundles = dict(state["bundles"])
+            try:
+                result = await run_step(number, step, build_registry(clients), bundles, invoke=invoke)
+            finally:
+                try:
+                    await clients.close()
+                except Exception:  # noqa: BLE001 - closing must never mask the result
+                    pass
+            results = {**state["results"], number: result}
+            upcoming = next_step(runbook, results)
+            moved = result.state is StepState.PASSED and upcoming in numbers
+            chosen = labels[numbers.index(upcoming)] if moved and upcoming is not None else label
+            return (
+                goal_card(runbook, results),
+                _diagram(runbook, results),
+                _step_outcome(result),
+                {"results": results, "bundles": bundles},
+                gr.update(value=chosen),
+            )
+
+        def _reset_runbook() -> tuple[Any, ...]:
+            return goal_card(runbook), _diagram(runbook, {}), "", None, gr.update(value=labels[0])
+
         prefill.click(_prefill, inputs=picker, outputs=outputs)
+        views = [goal_view, diagram_view, outcome, run_state, picker]
+        run.click(_run_runbook_step, inputs=[picker, run_state], outputs=views)
+        reset.click(_reset_runbook, outputs=views)
 
     def _render_unavailable_card(service: str) -> None:
         """Render a muted, still-expandable card listing a service's contract RPCs.
@@ -766,15 +879,16 @@ def build_workbench(
             with gr.Tab("Demo runbooks"):
                 with gr.Column(elem_classes=["service-body"]):
                     gr.Markdown(
-                        "Guidance over the same Workbench RPCs. Each step names the browser "
-                        "identity to use and the expected outcome; only safe bundles cross "
-                        "browsers, never tokens. Pick a step and **Prefill** to load its request "
-                        "into the Workbench; for a consumer step, paste the named bundle there."
+                        "Each runbook shows what it proves and, as a sequence diagram, who calls "
+                        "what. Pick a step and **Run step** to run it here: the diagram colours it "
+                        "by the result, and bundles pass to later steps. **Prefill** loads the step "
+                        "into the Workbench instead. Steps for another identity (R7) run in that "
+                        "identity's browser; only safe bundles cross browsers, never tokens."
                     )
                     for runbook in RUNBOOKS:
                         with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]):
+                            _render_runbook(runbook, tabs)
                             gr.Markdown(render_markdown(runbook, _resolver))
-                            _render_prefill(runbook, tabs)
 
         def _identity(request: gr.Request) -> tuple[str, str]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
@@ -810,7 +924,7 @@ def build_workbench(
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is not None:
                 try:
-                    clients = CitiusClients(config, make_provider(session.id))
+                    clients = _open_clients(session)
                 except Exception:  # noqa: BLE001 - without a client the static choices stay
                     clients = None
                 if clients is not None:

@@ -21,7 +21,8 @@ def _result(runbook: Runbook, index: int, state: StepState, status: str = "OK", 
 def test_every_runbook_draws_each_step_as_a_numbered_request_and_reply() -> None:
     for runbook in RUNBOOKS:
         text = sequence_diagram(runbook)
-        assert text.startswith("```mermaid\nsequenceDiagram\n") and text.endswith("\n```"), runbook.key
+        assert text.startswith("```mermaid\n%%{init:") and "\nsequenceDiagram\n" in text, runbook.key
+        assert '"mirrorActors": false' in text and text.endswith("\n```"), runbook.key
         for index, step in enumerate(runbook.steps, start=1):
             assert f"->>S: {index}. {step.method}" in text, (runbook.key, index)
         # Nothing has run, so only the first step is marked, as next.

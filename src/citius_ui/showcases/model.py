@@ -3,8 +3,9 @@
 A runbook is documentation over the registered RPC actions. Each step names the
 persona/browser that must be signed in, the service and RPC to run in the
 Workbench, an example request, the expected result category, and any safe bundle
-to copy to another browser. Runbooks never switch identity or execute RPCs
-themselves; the Workbench remains the single execution surface.
+to copy to another browser. Runbooks never switch identity. A step runs either
+from the runbook, through the same executor as the Workbench, or from the
+Workbench after Prefill loads its request there.
 """
 
 from __future__ import annotations
