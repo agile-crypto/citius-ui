@@ -46,6 +46,20 @@ ACCEPTED_STATUS: Mapping[ExpectedOutcome, frozenset[str]] = MappingProxyType(
 )
 
 
+class StepState(str, Enum):
+    """How a step's last run went, judged against what the step expects."""
+
+    NOT_RUN = "not_run"
+    # The expected status code, and every look_for field matches.
+    PASSED = "passed"
+    # The expected status code, but a look_for field has another value.
+    DIFFERS = "differs"
+    # Another status code than the step expects.
+    FAILED = "failed"
+    # Not run on purpose (the replay without the demo identities).
+    SKIPPED = "skipped"
+
+
 @dataclass(frozen=True, slots=True)
 class RunbookStep:
     """One documented step, pointing at a Workbench service and RPC.

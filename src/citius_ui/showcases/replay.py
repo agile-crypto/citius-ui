@@ -19,14 +19,14 @@ import argparse
 import asyncio
 import json
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from citius_ui.actions.model import ResultStatus
+from citius_ui.actions.model import ResultStatus, RpcAction, RpcResult
 from citius_ui.actions.registry import ActionRegistry
-from citius_ui.showcases.model import ACCEPTED_STATUS, ExpectedOutcome, Runbook, RunbookStep
+from citius_ui.showcases.model import ACCEPTED_STATUS, ExpectedOutcome, Runbook, RunbookStep, StepState
 from citius_ui.showcases.runbooks import RUNBOOKS, look_up
 from citius_ui.workbench.forms import FORMS_BY_METHOD, build_request
 
@@ -54,20 +54,65 @@ class StepResult:
     index: int
     step: RunbookStep
     status: str
-    passed: bool
-    skipped: bool = False
+    state: StepState
     detail: str = ""
 
+    @property
+    def passed(self) -> bool:
+        return self.state in (StepState.PASSED, StepState.SKIPPED)
 
-def _check(step: RunbookStep, status: str, response: Mapping[str, Any]) -> str:
-    """Why the result does not match the step, or "" if it does."""
+    @property
+    def skipped(self) -> bool:
+        return self.state is StepState.SKIPPED
+
+
+# Runs an action with a built request. The replay calls the action directly;
+# the UI goes through the ActionExecutor, so the run lands in the history.
+Invoke = Callable[[RpcAction, dict[str, Any]], Awaitable[RpcResult]]
+
+
+async def _invoke_directly(action: RpcAction, payload: dict[str, Any]) -> RpcResult:
+    assert action.invoke is not None
+    return await action.invoke(payload)
+
+
+def judge(step: RunbookStep, status: str, response: Mapping[str, Any]) -> tuple[StepState, str]:
+    """How a result compares with the step, and why when it does not match."""
     if status not in ACCEPTED_STATUS[step.expected]:
-        return f"expected {step.expected.value}, got {status}"
+        return StepState.FAILED, f"expected {step.expected.value}, got {status}"
     for path, want in (step.look_for or {}).items():
         got = look_up(response, path)
         if got != want:
-            return f"{path} = {json.dumps(got)}, expected {json.dumps(want)}"
-    return ""
+            return StepState.DIFFERS, f"{path} = {json.dumps(got)}, expected {json.dumps(want)}"
+    return StepState.PASSED, ""
+
+
+async def run_step(
+    index: int,
+    step: RunbookStep,
+    registry: ActionRegistry,
+    bundles: dict[str, str],
+    *,
+    invoke: Invoke = _invoke_directly,
+) -> StepResult:
+    """Run one step the way the UI sends it, and judge the result.
+
+    A consumer step gets the named bundle from ``bundles`` pasted in; a
+    producer step that succeeds stores its bundle there under its name.
+    """
+    spec = FORMS_BY_METHOD[(step.service, step.method)]
+    try:
+        payload = build_request(spec, form_values(step, bundles))
+    except ValueError as exc:  # a step the forms refuse is that step's failure
+        return StepResult(index, step, "INVALID_ARGUMENT", StepState.FAILED, f"form refused: {exc}")
+    action = registry.get(step.service, step.method)
+    result = await invoke(action, payload)
+    if step.copy_bundle and step.bundle and result.status is ResultStatus.OK and action.extract_artifacts:
+        artifacts = action.extract_artifacts(payload, result)
+        if artifacts:
+            bundles[step.bundle] = json.dumps(artifacts[0].bundle())
+    state, detail = judge(step, result.status.value, result.response)
+    return StepResult(index, step, result.status.value, state, detail or result.message)
 
 
 async def replay(runbook: Runbook, registry: ActionRegistry, *, identities: bool = False) -> list[StepResult]:
@@ -76,26 +121,9 @@ async def replay(runbook: Runbook, registry: ActionRegistry, *, identities: bool
     results = []
     for index, step in enumerate(runbook.steps, start=1):
         if step.expected in _IDENTITY_OUTCOMES and not identities:
-            results.append(StepResult(index, step, "", passed=True, skipped=True, detail="needs the demo identities"))
+            results.append(StepResult(index, step, "", StepState.SKIPPED, "needs the demo identities"))
             continue
-        spec = FORMS_BY_METHOD[(step.service, step.method)]
-        try:
-            payload = build_request(spec, form_values(step, bundles))
-        except ValueError as exc:  # a step the forms refuse is that step's failure, not the replay's
-            results.append(StepResult(index, step, "INVALID_ARGUMENT", passed=False, detail=f"form refused: {exc}"))
-            continue
-        action = registry.get(step.service, step.method)
-        assert action.invoke is not None
-        result = await action.invoke(payload)
-        detail = _check(step, result.status.value, result.response)
-        if not detail and result.status is not ResultStatus.OK:
-            detail = result.message
-        if step.copy_bundle and step.bundle and result.status is ResultStatus.OK and action.extract_artifacts:
-            artifacts = action.extract_artifacts(payload, result)
-            if artifacts:
-                bundles[step.bundle] = json.dumps(artifacts[0].bundle())
-        passed = not _check(step, result.status.value, result.response)
-        results.append(StepResult(index, step, result.status.value, passed=passed, detail=detail or result.message))
+        results.append(await run_step(index, step, registry, bundles))
     return results
 
 
@@ -117,6 +145,15 @@ def _clients(endpoint: str) -> Any:
     )
 
 
+_MARK = {
+    StepState.PASSED: "ok  ",
+    StepState.SKIPPED: "skip",
+    StepState.DIFFERS: "DIFF",
+    StepState.FAILED: "FAIL",
+    StepState.NOT_RUN: "    ",
+}
+
+
 async def _main(endpoint: str, keys: Iterable[str]) -> int:
     from citius_ui.workbench.actions import build_registry
 
@@ -130,7 +167,7 @@ async def _main(endpoint: str, keys: Iterable[str]) -> int:
                 continue
             print(f"\n{runbook.title}")
             for r in await replay(runbook, registry):
-                mark = "skip" if r.skipped else ("ok  " if r.passed else "FAIL")
+                mark = _MARK[r.state]
                 failures += not r.passed
                 print(f"  {mark} {r.index:2}. {r.step.method:<22} {r.step.title} {r.status}  {r.detail}".rstrip())
     finally:

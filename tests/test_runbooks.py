@@ -9,8 +9,8 @@ import pytest
 
 from citius_ui.actions.model import Availability, ResultStatus, RpcAction, RpcResult
 from citius_ui.actions.registry import ActionRegistry
-from citius_ui.showcases.model import ExpectedOutcome, Runbook, RunbookStep
-from citius_ui.showcases.replay import form_values, replay
+from citius_ui.showcases.model import ExpectedOutcome, Runbook, RunbookStep, StepState
+from citius_ui.showcases.replay import form_values, judge, replay, run_step
 from citius_ui.showcases.runbooks import (
     R3_POLICY,
     R4_AGILITY,
@@ -225,3 +225,34 @@ def test_replay_reports_a_step_the_forms_refuse_and_goes_on() -> None:
     results = asyncio.run(replay(runbook, _fake_registry({}, [])))
     assert [r.passed for r in results] == [False, True]
     assert results[0].detail.startswith("form refused")
+
+
+def test_judge_tells_a_wrong_status_from_a_different_value() -> None:
+    create = R4_AGILITY.steps[1]
+    assert create.look_for == {"key_metadata.template_id": "ecdsa-p256-sha256-der"}
+    ok = {"key_metadata": {"template_id": "ecdsa-p256-sha256-der"}}
+    assert judge(create, "OK", ok) == (StepState.PASSED, "")
+    state, detail = judge(create, "OK", {"key_metadata": {"template_id": "ml-dsa-44"}})
+    assert state is StepState.DIFFERS and "ml-dsa-44" in detail
+    assert judge(create, "NOT_FOUND", {})[0] is StepState.FAILED
+    # An expected refusal passes on its code alone.
+    refused = R3_POLICY.steps[4]
+    assert refused.expected is ExpectedOutcome.POLICY_REJECTED
+    assert judge(refused, "PERMISSION_DENIED", {})[0] is StepState.PASSED
+
+
+def test_run_step_goes_through_the_given_invoke_and_keeps_the_bundle() -> None:
+    seen: list[str] = []
+    registry = _fake_registry({}, [])
+
+    async def invoke(action: RpcAction, payload: dict[str, Any]) -> RpcResult:
+        seen.append(action.method)
+        return RpcResult(status=ResultStatus.OK, response={"valid": True})
+
+    bundles: dict[str, str] = {}
+    sign, verify = R4_AGILITY.steps[2], R4_AGILITY.steps[4]
+    first = asyncio.run(run_step(3, sign, registry, bundles, invoke=invoke))
+    assert first.state is StepState.PASSED and set(bundles) == {"r4-ecdsa"}
+    second = asyncio.run(run_step(5, verify, registry, bundles, invoke=invoke))
+    assert (second.index, second.state) == (5, StepState.PASSED)
+    assert seen == ["Sign", "Verify"]
