@@ -11,7 +11,9 @@ from __future__ import annotations
 import html
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Annotated
+from urllib.parse import urlencode, urlsplit
 
 import gradio as gr
 import httpx
@@ -41,6 +43,38 @@ from citius_ui.workbench.app import build_workbench
 
 _PENDING_LOGIN_TTL_SECONDS = 600.0
 _log = logging.getLogger("citius_ui.auth")
+
+# The only paths open without a session: signing in and out, the probes a
+# container platform calls, and /identity, which answers 401 itself. Every
+# other path, including any added later, needs a session.
+_PUBLIC_PATHS = frozenset(
+    {"/", "/dev-login", "/login", "/auth/callback", "/logout", "/healthz", "/readyz", "/identity"}
+)
+_MAX_NEXT_LENGTH = 2048
+
+
+def safe_next(value: str | None) -> str | None:
+    """``value`` if it is a path on this site, else None.
+
+    The return address after sign-in comes from the URL, so it must never
+    lead to another site: no scheme, no host, no protocol-relative ``//``,
+    no backslash (browsers read ``/\\host`` as a host), no control characters.
+    """
+    if not value or len(value) > _MAX_NEXT_LENGTH:
+        return None
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        return None
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return None
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc:
+        return None
+    return value
+
+
+def _wants_page(request: Request) -> bool:
+    """Whether a person is opening a page, rather than a script or the page calling the server."""
+    return request.method in ("GET", "HEAD") and "text/html" in request.headers.get("accept", "")
 
 
 def _set_session_cookie(response: Response, config: AppConfig, session_id: str) -> None:
@@ -95,7 +129,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
                 oidc_config.redirect_uri,
                 ca,
             )
-    pending_logins: dict[str, tuple[PkceChallenge, float]] = {}
+    pending_logins: dict[str, tuple[PkceChallenge, float, str | None]] = {}
 
     def _oidc_http_client() -> httpx.AsyncClient:
         """HTTP client for OIDC token/refresh calls, trusting the issuer CA.
@@ -111,11 +145,39 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
 
     def _prune_pending() -> None:
         cutoff = time.monotonic() - _PENDING_LOGIN_TTL_SECONDS
-        for state in [state for state, (_, created) in pending_logins.items() if created < cutoff]:
+        for state in [state for state, (_, created, _) in pending_logins.items() if created < cutoff]:
             pending_logins.pop(state, None)
 
     def current_session(request: Request) -> Session | None:
         return sessions.get(request.cookies.get(config.session_cookie_name))
+
+    @app.middleware("http")
+    async def require_session(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        """Send a person without a session to sign-in, and refuse everyone else.
+
+        Sessions live in this process, so after a restart the browser's cookie
+        names none: it is cleared, and the page asked for becomes the return
+        address. Pages are never cached, so the back button cannot show one
+        that looks signed in when it is not.
+        """
+        path = request.url.path
+        if path not in _PUBLIC_PATHS and current_session(request) is None:
+            denied: Response
+            if _wants_page(request):
+                target = f"{path}?{request.url.query}" if request.url.query else path
+                destination = "/"
+                if safe_next(target):
+                    destination = f"/?{urlencode({'next': target})}"
+                denied = RedirectResponse(url=destination, status_code=status.HTTP_303_SEE_OTHER)
+            else:
+                denied = JSONResponse({"error": "not signed in"}, status_code=status.HTTP_401_UNAUTHORIZED)
+            if request.cookies.get(config.session_cookie_name):
+                _clear_session_cookie(denied, config)
+            return denied
+        response = await call_next(request)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -129,11 +191,11 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             "tls": config.citius_tls_enabled,
         }
 
-    def _start_hosted_login() -> RedirectResponse:
+    def _start_hosted_login(next_path: str | None = None) -> RedirectResponse:
         assert oidc_config is not None
         _prune_pending()
         pkce = create_pkce_challenge()
-        pending_logins[pkce.state] = (pkce, time.monotonic())
+        pending_logins[pkce.state] = (pkce, time.monotonic(), next_path)
         return RedirectResponse(
             url=authorization_url(oidc_config, pkce),
             status_code=status.HTTP_303_SEE_OTHER,
@@ -141,21 +203,25 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
 
     @app.get("/")
     async def index(request: Request) -> Response:
+        next_path = safe_next(request.query_params.get("next"))
         session = current_session(request)
         if session is not None:
+            if next_path is not None:
+                return RedirectResponse(url=next_path, status_code=status.HTTP_303_SEE_OTHER)
             return HTMLResponse(_identity_page(session))
         if oidc_config is not None:
-            return _start_hosted_login()
-        return HTMLResponse(_login_page())
+            return _start_hosted_login(next_path)
+        return HTMLResponse(_login_page(next_path))
 
     @app.get("/dev-login", response_class=HTMLResponse)
-    async def dev_login_page() -> HTMLResponse:
-        return HTMLResponse(_login_page())
+    async def dev_login_page(request: Request) -> HTMLResponse:
+        return HTMLResponse(_login_page(safe_next(request.query_params.get("next"))))
 
     @app.post("/dev-login")
     async def dev_login(
         persona: Annotated[str, Form()],
         access_token: Annotated[str, Form()] = "",
+        next_path: Annotated[str, Form(alias="next")] = "",
     ) -> Response:
         definition = get_persona(persona.strip())
         if definition is None:
@@ -178,18 +244,18 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             key_allow=definition.key_allow,
             key_deny=definition.key_deny,
         )
-        response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        response = RedirectResponse(url=safe_next(next_path) or "/", status_code=status.HTTP_303_SEE_OTHER)
         _set_session_cookie(response, config, session.id)
         return response
 
     @app.get("/login")
-    async def login() -> Response:
+    async def login(request: Request) -> Response:
         if oidc_config is None:
             return JSONResponse(
                 {"error": "OIDC is not configured; use development sign-in"},
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        return _start_hosted_login()
+        return _start_hosted_login(safe_next(request.query_params.get("next")))
 
     @app.get("/auth/callback")
     async def auth_callback(request: Request) -> Response:
@@ -205,7 +271,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
         entry = pending_logins.pop(state, None)
         if entry is None:
             return JSONResponse({"error": "invalid or expired state"}, status_code=status.HTTP_400_BAD_REQUEST)
-        pkce, _ = entry
+        pkce, _, next_path = entry
         try:
             async with _oidc_http_client() as client:
                 tokens = await exchange_code(client, oidc_config, code=code, code_verifier=pkce.verifier)
@@ -262,7 +328,7 @@ def build_app(config: AppConfig | None = None, *, store: SessionStore | None = N
             key_allow=grants.key_allow,
             key_deny=grants.key_deny,
         )
-        response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+        response = RedirectResponse(url=next_path or "/", status_code=status.HTTP_303_SEE_OTHER)
         _set_session_cookie(response, config, session.id)
         return response
 
@@ -353,18 +419,20 @@ _PAGE_STYLE = """
 """
 
 
-def _login_page() -> str:
+def _login_page(next_path: str | None = None) -> str:
     options = "".join(
         f'<option value="{html.escape(key, quote=True)}">{html.escape(persona.display_name)}</option>'
         for key, persona in DEMO_PERSONAS.items()
     )
+    # Where to go after signing in; safe_next has already vetted it.
+    return_to = f'<input type="hidden" name="next" value="{html.escape(next_path, quote=True)}" />' if next_path else ""
     return f"""<!doctype html><html><head><title>Citius Console</title>{_PAGE_STYLE}</head>
 <body>
 <div class="card">
   <div class="banner"><h1>Citius Console</h1>
     <p>Development sign-in. One identity per browser session.</p></div>
   <div class="body">
-    <form method="post" action="/dev-login">
+    <form method="post" action="/dev-login">{return_to}
       <label for="persona">Persona</label>
       <select id="persona" name="persona">{options}</select>
       <label for="access_token">Access token (optional, local development)</label>

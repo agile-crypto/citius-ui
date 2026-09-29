@@ -331,3 +331,92 @@ def test_auth_callback_rejects_invalid_id_token(tmp_path: Path, monkeypatch: pyt
     assert response.status_code == 401
     # No session cookie was set.
     assert config.session_cookie_name not in response.cookies
+
+
+# ── Every path but sign-in and the probes needs a session ─────────────────────
+
+_PAGE = {"accept": "text/html,application/xhtml+xml"}
+
+
+def test_opening_a_page_without_a_session_sends_you_to_sign_in(client: TestClient) -> None:
+    response = client.get("/workbench/", headers=_PAGE)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?next=%2Fworkbench%2F"
+    # A path nobody has thought of yet is locked the same way.
+    assert client.get("/anything/new?x=1", headers=_PAGE).headers["location"] == "/?next=%2Fanything%2Fnew%3Fx%3D1"
+
+
+def test_calls_without_a_session_get_401_not_a_redirect(client: TestClient) -> None:
+    response = client.post("/workbench/gradio_api/queue/join", json={})
+    assert response.status_code == 401
+    assert response.json() == {"error": "not signed in"}
+    assert client.get("/workbench/gradio_api/info").status_code == 401
+
+
+def test_sign_in_routes_and_probes_stay_open(client: TestClient) -> None:
+    for path in ("/", "/dev-login", "/healthz", "/readyz"):
+        assert client.get(path, headers=_PAGE).status_code == 200, path
+    assert client.get("/logout").status_code == 303
+    assert client.get("/identity").status_code == 401  # its own answer, for scripts
+
+
+def test_a_cookie_from_before_a_restart_is_cleared(client: TestClient) -> None:
+    client.cookies.set("citius_session", "from-the-last-process")
+    response = client.get("/workbench/", headers=_PAGE)
+    assert response.status_code == 303
+    assert 'citius_session=""' in response.headers["set-cookie"]
+
+
+def test_dev_sign_in_returns_to_the_page_asked_for(client: TestClient) -> None:
+    page = client.get("/?next=%2Fworkbench%2F").text
+    assert '<input type="hidden" name="next" value="/workbench/" />' in page
+    response = client.post("/dev-login", data={"persona": "ciso", "next": "/workbench/"})
+    assert (response.status_code, response.headers["location"]) == (303, "/workbench/")
+    # Signed in, the page opens, and is not cached.
+    workbench = client.get("/workbench/", headers=_PAGE)
+    assert workbench.status_code == 200
+    assert workbench.headers["cache-control"] == "no-store"
+    # With a session, a return address is followed straight away.
+    assert client.get("/?next=%2Fworkbench%2F").headers["location"] == "/workbench/"
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["https://evil.example/", "//evil.example/", "/\\evil.example", "evil", "/ok\r\nSet-Cookie: x=1", "/" + "a" * 3000],
+)
+def test_a_return_address_off_this_site_is_ignored(client: TestClient, unsafe: str) -> None:
+    from citius_ui.main import safe_next
+
+    assert safe_next(unsafe) is None
+    assert 'name="next"' not in client.get("/", params={"next": unsafe}).text
+    response = client.post("/dev-login", data={"persona": "ciso", "next": unsafe})
+    assert response.headers["location"] == "/"
+
+
+def test_hosted_sign_in_returns_to_the_page_asked_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import parse_qs, urlparse
+
+    import citius_ui.main as main_module
+    from citius_ui.auth.oidc import Identity, TokenSet
+
+    async def fake_exchange(_client: object, _config: object, *, code: str, code_verifier: str) -> TokenSet:
+        return TokenSet(access_token="at", refresh_token="rt", id_token="idt", expires_in=3600)
+
+    def fake_validate(*_args: object, **_kwargs: object) -> Identity:
+        return Identity(subject="user-1", display_name="Citius CISO", username="citius-ciso")
+
+    async def fake_userinfo(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"sub": "user-1"}
+
+    monkeypatch.setattr(main_module, "exchange_code", fake_exchange)
+    monkeypatch.setattr(main_module, "validate_id_token", fake_validate)
+    monkeypatch.setattr(main_module, "fetch_userinfo", fake_userinfo)
+    config = AppConfig(session_cookie_secure=False, oidc_config_path=_oidc_config_file(tmp_path))
+    client = TestClient(build_app(config, store=SessionStore()), follow_redirects=False)
+
+    to_sign_in = client.get("/workbench/", headers=_PAGE).headers["location"]
+    to_issuer = client.get(to_sign_in).headers["location"]
+    assert to_issuer.startswith("https://issuer.example/oauth/v2/authorize")
+    state = parse_qs(urlparse(to_issuer).query)["state"][0]
+    response = client.get(f"/auth/callback?code=c&state={state}")
+    assert (response.status_code, response.headers["location"]) == (303, "/workbench/")
