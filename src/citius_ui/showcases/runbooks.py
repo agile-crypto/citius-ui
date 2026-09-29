@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from citius_ui.actions.model import Availability
-from citius_ui.showcases.model import ExpectedOutcome, Runbook, RunbookStep
+from citius_ui.showcases.model import ExpectedOutcome, Goal, Proof, Runbook, RunbookStep
 
 AvailabilityResolver = Callable[[str, str], Availability]
 
@@ -301,6 +301,15 @@ R1_INTENT = Runbook(
             "Seven requests, seven algorithms, and none of them was named. Try the Crypto inventory tab too.",
         ),
     ),
+    goal=Goal(
+        claim="Ask for properties, get the right algorithm",
+        before="Code names the algorithm",
+        after="code states what it needs",
+        proofs=(
+            Proof("No request names an algorithm", (2, 3, 4, 5, 6, 7, 8)),
+            Proof("Seven requests, seven algorithms", (2, 3, 4, 5, 6, 7, 8, 9)),
+        ),
+    ),
 )
 
 # ── R2 — Implementation requirements choose the provider ─────────────────────
@@ -380,6 +389,15 @@ R2_PROVIDERS = Runbook(
             hint="openssl is written in C, so it cannot meet require_memory_safe.",
         ),
     ),
+    goal=Goal(
+        claim="Where a key lives is a separate choice",
+        before="The algorithm picks the library",
+        after="requirements pick the provider",
+        proofs=(
+            Proof("One template, the provider follows the requirement", (3, 4, 5, 6)),
+            Proof("A pin that breaks a requirement is refused", (7,)),
+        ),
+    ),
 )
 
 # ── R3 — Policy as guardrail ──────────────────────────────────────────────────
@@ -438,6 +456,16 @@ R3_POLICY = Runbook(
         ),
         _transform(_R3_KEY, "ml-dsa-65", "The same request now succeeds."),
     ),
+    goal=Goal(
+        claim="The policy is enforced on every call",
+        before="Rules in a document",
+        after="rules applied at once",
+        proofs=(
+            Proof("The policy narrows what a request gets", (2,)),
+            Proof("The same Sign is allowed, then blocked", (3, 4, 5)),
+            Proof("A policy change takes effect at once", (6, 7, 8)),
+        ),
+    ),
 )
 
 # ── R4 — Crypto agility with backward compatibility ──────────────────────────
@@ -493,6 +521,16 @@ R4_AGILITY = Runbook(
             explanation="The same RSA key pair under a different padding scheme.",
             request={"name": "demo-r4-rsa", "template_id": "rsa-pkcs1v15-sha256-2048", "retain_key_bytes": True},
             look_for={"key_metadata.template_id": "rsa-pkcs1v15-sha256-2048"},
+        ),
+    ),
+    goal=Goal(
+        claim="Change the algorithm, don't break the past",
+        before="Swap the algorithm and re-sign everything",
+        after="same key name, old signatures still valid",
+        proofs=(
+            Proof("ECDSA to ML-DSA under the same name", (2, 4)),
+            Proof("The old signature still verifies", (3, 5)),
+            Proof("The caller's request does not change", (6, 7)),
         ),
     ),
 )
@@ -568,6 +606,15 @@ R5_PORTABILITY = Runbook(
         _verify("demo-r5-sign", "r5-sig", "The old signature verifies against the archived version."),
         _timeline("demo-r5-sign", "v1 on software, v2 on openssl."),
     ),
+    goal=Goal(
+        claim="Move keys between providers, data untouched",
+        before="Re-encrypt everything",
+        after="move the key",
+        proofs=(
+            Proof("Old ciphertext decrypts on the new provider", (2, 3, 5, 6)),
+            Proof("A rekey keeps the old version for old signatures", (7, 8, 9, 10)),
+        ),
+    ),
 )
 
 # ── R6 — The scope is a contract ──────────────────────────────────────────────
@@ -642,6 +689,15 @@ R6_SCOPE = Runbook(
         ),
         _verify("demo-r6-ctx", "r6-ctx", "Under its own context it verifies.", domain_context="payments-v1"),
     ),
+    goal=Goal(
+        claim="A key's scope is a contract with its callers",
+        before="Callers break silently",
+        after="changes that would break them are refused",
+        proofs=(
+            Proof("The input contract cannot change", (3, 4)),
+            Proof("A signature is bound to its context", (6, 7, 8)),
+        ),
+    ),
 )
 
 # ── R7 — Separation of duties ─────────────────────────────────────────────────
@@ -696,6 +752,16 @@ R7_DUTIES = Runbook(
             explanation="The producer may sign, but not with this key.",
             request={"key_name": "demo-restricted-key", "message": _MESSAGE},
             hint="demo-restricted-* is on the producer's deny list.",
+        ),
+    ),
+    goal=Goal(
+        claim="Nobody can do another person's job",
+        before="Shared admin credentials",
+        after="each person limited to their own operations",
+        proofs=(
+            Proof("The producer cannot verify", (4,)),
+            Proof("The consumer cannot sign", (6,)),
+            Proof("A key outside your pattern is denied", (7,)),
         ),
     ),
 )
@@ -798,6 +864,16 @@ R8_CAMPAIGN = Runbook(
             "Take the inventory again",
             "Every key in openssl-fips; both signing keys quantum-safe. The AES-256 key is unchanged: "
             "the catalogue does not mark AES as quantum-safe. Rebuild the Crypto inventory to compare.",
+        ),
+    ),
+    goal=Goal(
+        claim="PQ migration with nothing broken",
+        before="A big-bang migration",
+        after="keys moved one at a time, everything still works",
+        proofs=(
+            Proof("Inventory before and after", (8, 21)),
+            Proof("FIPS custody is enforced", (9, 10)),
+            Proof("Every old signature and ciphertext still works", (16, 17, 18)),
         ),
     ),
 )

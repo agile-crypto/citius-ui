@@ -82,6 +82,33 @@ def test_every_expected_refusal_says_why() -> None:
             assert step.hint, f"{runbook.key} step {index} expects {step.expected.value} without a hint"
 
 
+def test_every_runbook_has_a_goal_whose_proofs_name_its_steps() -> None:
+    for runbook in RUNBOOKS:
+        goal = runbook.goal
+        assert goal is not None, runbook.key
+        assert goal.claim and goal.before and goal.after, runbook.key
+        assert 2 <= len(goal.proofs) <= 3, runbook.key
+        for proof in goal.proofs:
+            assert proof.steps, f"{runbook.key}: {proof.text!r} names no step"
+            assert set(proof.steps) <= set(range(1, len(runbook.steps) + 1)), f"{runbook.key}: {proof.text!r}"
+
+
+def test_goal_proofs_point_at_the_steps_that_show_them() -> None:
+    def step(runbook: Runbook, number: int) -> RunbookStep:
+        return runbook.steps[number - 1]
+
+    # A refusal proof names the refused step.
+    for runbook in (R3_POLICY, R7_DUTIES):
+        assert runbook.goal is not None
+        for proof in runbook.goal.proofs:
+            if "blocked" in proof.text or "cannot" in proof.text or "denied" in proof.text:
+                assert any(step(runbook, n).expected is not ExpectedOutcome.SUCCESS for n in proof.steps)
+    # R4's "old signature still verifies" is the sign, then the verify of that bundle.
+    assert R4_AGILITY.goal is not None
+    sign, verify = (step(R4_AGILITY, n) for n in R4_AGILITY.goal.proofs[1].steps)
+    assert (sign.method, verify.method, verify.bundle) == ("Sign", "Verify", sign.bundle)
+
+
 def test_form_values_pastes_the_named_bundle_and_rejects_unknown_fields() -> None:
     consumer = next(s for s in R4_AGILITY.steps if s.method == "Verify")
     spec = FORMS_BY_METHOD[(consumer.service, consumer.method)]

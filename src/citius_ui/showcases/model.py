@@ -74,6 +74,29 @@ class RunbookStep:
 
 
 @dataclass(frozen=True, slots=True)
+class Proof:
+    """One thing a runbook proves, and the steps (numbered from 1) that prove it."""
+
+    text: str
+    steps: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Goal:
+    """What a runbook shows, short enough to read at a glance.
+
+    ``claim`` is the point in a few words; ``before`` and ``after`` contrast
+    the usual way with what Citius changes; each proof is shown once all its
+    steps have gone as expected.
+    """
+
+    claim: str
+    before: str
+    after: str
+    proofs: tuple[Proof, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Runbook:
     """A named multi-browser demonstration composed of documented steps."""
 
@@ -81,6 +104,7 @@ class Runbook:
     title: str
     summary: str
     steps: tuple[RunbookStep, ...] = field(default_factory=tuple)
+    goal: Goal | None = None
 
     def required_actions(self) -> set[tuple[str, str]]:
         """Return the (service, method) pairs the runbook references."""
