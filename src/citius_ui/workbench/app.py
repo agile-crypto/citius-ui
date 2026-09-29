@@ -148,6 +148,8 @@ CSS = """
   --citius-zone-bg: #e3e9f8; --citius-zone-border: #e2e4ea; --citius-field-bg: #ffffff;
   --citius-muted-bg: #f0f1f4; --citius-muted-ink: #9599a6;
   --citius-accent-purple: #7f77dd; --citius-accent-teal: #1d9e75; --citius-accent-coral: #d85a30;
+  --citius-seq-ink: #2f3d6b; --citius-seq-line: #56628c; --citius-seq-actor: #e6ebfb;
+  --citius-seq-actor-edge: #9aa9d8; --citius-seq-lifeline: #c3cce6;
 }
 :root .dark {
   --citius-ink: #cdd7f5; --citius-ink-soft: #93a1cc;
@@ -160,6 +162,8 @@ CSS = """
   --citius-zone-bg: #12162a; --citius-zone-border: #2a2e3a; --citius-field-bg: #262b38;
   --citius-muted-bg: #181c2c; --citius-muted-ink: #666c7d;
   --citius-accent-purple: #9a92e8; --citius-accent-teal: #3fceA0; --citius-accent-coral: #ef8a63;
+  --citius-seq-ink: #d7def5; --citius-seq-line: #aab8e0; --citius-seq-actor: #27334f;
+  --citius-seq-actor-edge: #5a6a9c; --citius-seq-lifeline: #3f4c75;
 }
 .title-container { text-align: center; margin: 8px 0 18px; padding: 26px;
                    background: linear-gradient(135deg, var(--citius-banner-start), var(--citius-banner-end));
@@ -201,6 +205,23 @@ CSS = """
 /* Mermaid stretches a diagram to the full width, which makes a long runbook
    several screens tall; cap it so it scales down instead. */
 .runbook-diagram .mermaid svg { max-width: 860px !important; }
+/* Gradio draws a diagram once, in the theme the page loaded with, and the
+   toggle only flips the page's "dark" class, so Mermaid's own colours stay
+   behind. Its stylesheet sits inside each diagram without !important, so
+   these rules win and follow the theme variables above. The step bands keep
+   their own semi-transparent fills, which read on both backgrounds. */
+.runbook-diagram .mermaid svg { color: var(--citius-seq-ink) !important; }
+.runbook-diagram .mermaid .messageText, .runbook-diagram .mermaid text.actor > tspan,
+.runbook-diagram .mermaid .noteText, .runbook-diagram .mermaid .noteText > tspan {
+    fill: var(--citius-seq-ink) !important; stroke: none !important; }
+.runbook-diagram .mermaid .messageLine0, .runbook-diagram .mermaid .messageLine1 {
+    stroke: var(--citius-seq-line) !important; }
+.runbook-diagram .mermaid marker path, .runbook-diagram .mermaid .marker {
+    fill: var(--citius-seq-line) !important; stroke: var(--citius-seq-line) !important; }
+.runbook-diagram .mermaid rect.actor, .runbook-diagram .mermaid .actor-man circle {
+    fill: var(--citius-seq-actor) !important; stroke: var(--citius-seq-actor-edge) !important; }
+.runbook-diagram .mermaid .actor-man line { stroke: var(--citius-seq-actor-edge) !important; }
+.runbook-diagram .mermaid .actor-line { stroke: var(--citius-seq-lifeline) !important; }
 
 /* Method, Request, Examples, and Output each sit in their own bordered,
    tinted zone so the four read as clearly separate regions within a service
