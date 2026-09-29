@@ -10,7 +10,10 @@ generated widget per oneof branch.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as _field
+from types import MappingProxyType
 
 import citius_sdk as _sdk
 
@@ -41,6 +44,23 @@ class FormField:
 
 
 @dataclass(frozen=True, slots=True)
+class Example:
+    """A ready-made request: what it shows, and the fields it sets.
+
+    Every field it does not name keeps its blank default, so an example
+    stays right when a form gains a field.
+    """
+
+    text: str
+    values: Mapping[str, object] = _field(default_factory=lambda: MappingProxyType({}))
+
+
+# The field whose value names what an example is about (the key, policy,
+# template or instance), in the order they are looked for.
+_SUBJECT_FIELDS = ("name", "key_name", "instance_id")
+
+
+@dataclass(frozen=True, slots=True)
 class RpcFormSpec:
     """The form for one implemented RPC: fields, examples, and output shape."""
 
@@ -48,10 +68,36 @@ class RpcFormSpec:
     method: str
     action_label: str
     fields: tuple[FormField, ...]
-    examples: tuple[tuple[object, ...], ...] = ()
+    examples: tuple[Example, ...] = ()
     produces: str = ""  # "" | Signature | Ciphertext
     consumes: str = ""  # "" | Signature | Ciphertext: accepts a pasted producer bundle
     advanced_hint: str = ""
+    # The field shown as the examples' name column; blank picks the first of
+    # _SUBJECT_FIELDS the form has. A form with neither shows no name column.
+    subject: str = ""
+
+    def subject_field(self) -> FormField | None:
+        keys = (self.subject,) if self.subject else _SUBJECT_FIELDS
+        by_key = {f.key: f for f in self.fields}
+        return next((by_key[key] for key in keys if key in by_key), None)
+
+    def example_values(self, example: Example) -> list[object]:
+        """The example as form values in field order, blank where it sets nothing.
+
+        Raises ValueError if the example names a field the form does not have.
+        """
+        unknown = set(example.values) - {f.key for f in self.fields}
+        if unknown:
+            raise ValueError(f"{self.method} example {example.text!r} sets unknown field(s) {sorted(unknown)}")
+        return [example.values[f.key] if f.key in example.values else _blank(f) for f in self.fields]
+
+    def example_rows(self) -> tuple[list[str], list[list[str]]]:
+        """The examples table: its headers and one row per example."""
+        subject = self.subject_field()
+        if subject is None:
+            return ["Example"], [[example.text] for example in self.examples]
+        rows = [[str(example.values.get(subject.key) or "—"), example.text] for example in self.examples]
+        return [subject.label, "Example"], rows
 
     def core_fields(self) -> tuple[FormField, ...]:
         """Fields shown up front (no group), in declaration order."""
@@ -83,6 +129,20 @@ GROUP_MANUAL = "Advanced — enter value and metadata manually"
 
 
 _POLICY_FORMATS = ("json", "rego", "cedar", "yaml")
+
+# What a field an example leaves out is set to: what a fresh form shows.
+_BLANK: dict[str, object] = {"bool": False, "number": None}
+
+
+def _blank(field: FormField) -> object:
+    if field.kind == "dropdown" and field.choices and not field.optional:
+        return field.choices[0]
+    return _BLANK.get(field.kind, "")
+
+
+# The message the Sign examples use, and its SHA-256 (base64) for the digest ones.
+_MESSAGE = "Hello from Citius"
+_MESSAGE_SHA256 = "dd37/hdyzzn7BLltwfCmNXDQt612QJj3aIVjbPLQQKA="
 
 # Full intent-oriented scope vocabulary, sourced from the SDK Scope enum so the
 # dropdown and the SDK stay in lock-step. A blank leading entry keeps "infer
@@ -279,9 +339,18 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("format", "Format", kind="dropdown", choices=_POLICY_FORMATS, optional=True),
         ),
         examples=(
-            ("demo-signing-policy", _SAMPLE_SIGNING_POLICY, "json"),
-            ("demo-encryption-policy", _SAMPLE_ENCRYPTION_POLICY, "json"),
-            ("demo-restricted-policy", _SAMPLE_RESTRICTED_POLICY, "json"),
+            Example(
+                "Signing policy: ECDSA and ML-DSA",
+                {"name": "demo-signing-policy", "policy_document": _SAMPLE_SIGNING_POLICY, "format": "json"},
+            ),
+            Example(
+                "Encryption policy: AES-256-GCM",
+                {"name": "demo-encryption-policy", "policy_document": _SAMPLE_ENCRYPTION_POLICY, "format": "json"},
+            ),
+            Example(
+                "Verify-only policy",
+                {"name": "demo-restricted-policy", "policy_document": _SAMPLE_RESTRICTED_POLICY, "format": "json"},
+            ),
         ),
     ),
     RpcFormSpec(
@@ -289,7 +358,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "ReadCryptoPolicy",
         "Read",
         (FormField("name", "Policy name", placeholder="demo-signing-policy"),),
-        examples=(("demo-signing-policy",),),
+        examples=(Example("The signing policy", {"name": "demo-signing-policy"}),),
     ),
     RpcFormSpec(
         "CryptoPolicyService",
@@ -306,7 +375,17 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("format", "Format", kind="dropdown", choices=_POLICY_FORMATS, optional=True),
             FormField("expected_version", "Expected version", kind="number", optional=True),
         ),
-        examples=(("demo-signing-policy", _SAMPLE_SIGNING_POLICY_V2, "json", 1),),
+        examples=(
+            Example(
+                "Add ECDSA P-384 to the signing policy",
+                {
+                    "name": "demo-signing-policy",
+                    "policy_document": _SAMPLE_SIGNING_POLICY_V2,
+                    "format": "json",
+                    "expected_version": 1,
+                },
+            ),
+        ),
     ),
     RpcFormSpec(
         "KeyManagementService",
@@ -333,97 +412,53 @@ FORMS: tuple[RpcFormSpec, ...] = (
             _scope_spec_field(),
             _provider_requirements_field(),
         ),
+        # From intent, as the API means it: the platform picks the first
+        # template in the policy's list that meets the requirements. The last
+        # example names everything, to show that works too. The names are the
+        # keys the Sign, Encrypt and Digest examples use.
         examples=(
-            (
-                "demo-signing-key",
-                "demo-signing-policy",
-                "ecdsa-p256-sha256-der",
-                "software",
-                "SIGNATURE_STANDARD",
-                None,
-                "",
-                "",
-                "",
-                "",
-                False,
-                "",
-                False,
-                False,
-                False,
-                False,
-                False,
-                "",
-                "",
+            Example(
+                "Signature key",
+                {"name": "demo-signing-key", "policy": "demo-signing-policy", "scope": "SIGNATURE_STANDARD"},
             ),
-            # Digest signing needs a prehashed-scope key: the catalog declares
-            # DigestSign/DigestVerify only on prehashed signature scopes.
-            (
-                "demo-digest-key",
-                "demo-signing-policy",
-                "ecdsa-p256-prehashed-der",
-                "software",
-                "SIGNATURE_PREHASHED",
-                None,
-                "",
-                "",
-                "",
-                "",
-                False,
-                "",
-                False,
-                False,
-                False,
-                False,
-                False,
-                "",
-                "",
+            Example(
+                "Signature key, quantum-safe",
+                {
+                    "name": "demo-pqc-signing-key",
+                    "policy": "demo-signing-policy",
+                    "scope": "SIGNATURE_STANDARD",
+                    "quantum_safe": "true",
+                },
             ),
-            (
-                "demo-encryption-key",
-                "demo-encryption-policy",
-                "aes-256-gcm-128-96",
-                "software",
-                "AEAD_STANDARD",
-                None,
-                "",
-                "",
-                "",
-                "",
-                False,
-                "",
-                False,
-                False,
-                False,
-                False,
-                False,
-                "",
-                "",
+            # DigestSign/DigestVerify need a prehashed-scope key.
+            Example(
+                "Signature key for digests (prehashed)",
+                {"name": "demo-digest-key", "policy": "demo-signing-policy", "scope": "SIGNATURE_PREHASHED"},
             ),
-            # Exercises the filter sections: a quantum-safe, NIST-approved,
-            # FIPS-approved (FIPS 204) signing key on a memory-safe provider.
-            # fips_approved filters the algorithm; FIPS 140 certification of
-            # the provider is a separate provider requirement, which the
-            # memory-safe software provider cannot meet.
-            (
-                "demo-pqc-signing-key",
-                "demo-signing-policy",
-                "ml-dsa-65",
-                "software",
-                "SIGNATURE_STANDARD",
-                192,
-                "LEVEL_3",
-                "APPROVED",
-                "true",
-                "true",
-                False,
-                "",
-                True,
-                False,
-                False,
-                False,
-                False,
-                "",
-                "",
+            Example(
+                "Encryption key (AEAD)",
+                {"name": "demo-encryption-key", "policy": "demo-encryption-policy", "scope": "AEAD_STANDARD"},
+            ),
+            # fips_approved would filter the algorithm; FIPS 140 custody is a
+            # provider requirement, which only openssl-fips meets.
+            Example(
+                "Quantum-safe key in a FIPS 140 module",
+                {
+                    "name": "demo-fips-signing-key",
+                    "policy": "demo-signing-policy",
+                    "scope": "SIGNATURE_STANDARD",
+                    "quantum_safe": "true",
+                    "require_fips_140": True,
+                },
+            ),
+            Example(
+                "Exact template, pinned to software",
+                {
+                    "name": "demo-pinned-key",
+                    "policy": "demo-signing-policy",
+                    "template_id": "ecdsa-p256-sha256-der",
+                    "provider_id": "software",
+                },
             ),
         ),
     ),
@@ -444,7 +479,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 ),
             ),
         ),
-        examples=(("demo-signing-key", None, False), ("demo-signing-key", None, True)),
+        examples=(
+            Example("Current version", {"name": "demo-signing-key"}),
+            Example("Every version (timeline)", {"name": "demo-signing-key", "all_versions": True}),
+        ),
     ),
     RpcFormSpec(
         "KeyManagementService",
@@ -478,29 +516,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
             _scope_spec_field(),
         ),
         examples=(
-            (
-                "demo-signing-key",
-                "ml-dsa-65",
-                False,
-                "SIGNATURE_STANDARD",
-                None,
-                "",
-                "",
-                "",
-                "",
-                "",
+            Example(
+                "To a quantum-safe algorithm, by intent",
+                {"name": "demo-signing-key", "scope": "SIGNATURE_STANDARD", "quantum_safe": "true"},
             ),
-            (
-                "demo-signing-key",
-                "ecdsa-p256-prehashed-der",
-                True,
-                "SIGNATURE_PREHASHED",
-                None,
-                "",
-                "",
-                "",
-                "",
-                "",
+            Example(
+                "Rotate: new key material, same template",
+                {"name": "demo-pinned-key", "template_id": "ecdsa-p256-sha256-der"},
             ),
         ),
     ),
@@ -543,8 +565,14 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "PROVIDER_SWITCH", "openssl", ""),
-            ("demo-signing-key", "REKEY_AND_ARCHIVE", "", "openssl"),
+            Example(
+                "Copy the key to openssl (provider switch)",
+                {"name": "demo-encryption-key", "strategy": "PROVIDER_SWITCH", "target_instance_id": "openssl"},
+            ),
+            Example(
+                "New key in the FIPS module, old version archived (rekey)",
+                {"name": "demo-signing-key", "strategy": "REKEY_AND_ARCHIVE", "target_instance_id": "openssl-fips"},
+            ),
         ),
     ),
     RpcFormSpec(
@@ -579,8 +607,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "openssl", "", ""),
-            ("demo-signing-key", "openssl-fips", "", "PROVIDER_SWITCH"),
+            Example("Can it move to openssl?", {"name": "demo-signing-key", "target_instance_id": "openssl"}),
+            Example(
+                "Can it be copied into the FIPS module?",
+                {
+                    "name": "demo-signing-key",
+                    "target_instance_id": "openssl-fips",
+                    "preferred_strategy": "PROVIDER_SWITCH",
+                },
+            ),
         ),
     ),
     RpcFormSpec(
@@ -607,8 +642,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("page_token", "Page token", optional=True, help="The next_page_token of the previous page."),
         ),
         examples=(
-            ("", "", "", None, ""),
-            ("openssl", "", "ACTIVE", None, ""),
+            Example("Every key"),
+            Example("Active keys on openssl", {"provider_id": "openssl", "lifecycle_state": "ACTIVE"}),
         ),
     ),
     RpcFormSpec(
@@ -634,9 +669,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-signing-key", "Hello from Citius", "", ""),
-            # Domain-separated signature: a plain-text separation tag.
-            ("demo-signing-key", "Hello from Citius", "citius-demo", ""),
+            Example("Sign a message", {"key_name": "demo-signing-key", "message": _MESSAGE}),
+            Example("Sign with the quantum-safe key", {"key_name": "demo-pqc-signing-key", "message": _MESSAGE}),
         ),
         produces="Signature",
     ),
@@ -671,10 +705,9 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(
-            # Bundle-first: paste one bundle, leave the manual fields blank.
-            ("demo-signing-key", "<paste Sign bundle>", "", "", "", "", ""),
-        ),
+        # The key only: the bundle comes from the Sign response, and choosing
+        # an example leaves a pasted bundle in place.
+        examples=(Example("Verify a signature", {"key_name": "demo-signing-key"}),),
         consumes="Signature",
     ),
     RpcFormSpec(
@@ -700,9 +733,11 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-encryption-key", "Sensitive demo payload", "", ""),
-            # AEAD with additional authenticated data: a plain-text context tag.
-            ("demo-encryption-key", "Sensitive demo payload", "context-v1", ""),
+            Example("Encrypt a message", {"key_name": "demo-encryption-key", "plaintext": "Sensitive demo payload"}),
+            Example(
+                "Encrypt with additional authenticated data",
+                {"key_name": "demo-encryption-key", "plaintext": "Sensitive demo payload", "aad": "context-v1"},
+            ),
         ),
         produces="Ciphertext",
     ),
@@ -736,7 +771,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-encryption-key", "<paste Encrypt bundle>", "", "", "", ""),),
+        examples=(
+            Example("Decrypt a ciphertext", {"key_name": "demo-encryption-key"}),
+            # AAD is not in the bundle: it must be given again, as at Encrypt.
+            Example(
+                "Decrypt with additional authenticated data", {"key_name": "demo-encryption-key", "aad": "context-v1"}
+            ),
+        ),
         consumes="Ciphertext",
     ),
     RpcFormSpec(
@@ -763,9 +804,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         examples=(
-            ("demo-digest-key", "<paste digest>", "", "", ""),
-            # Declare the hash that produced the digest.
-            ("demo-digest-key", "<paste digest>", "SHA256", "", ""),
+            Example(
+                "Sign a SHA-256 digest",
+                {"key_name": "demo-digest-key", "digest": _MESSAGE_SHA256, "hash_algorithm": "SHA256"},
+            ),
         ),
         produces="Signature",
     ),
@@ -801,7 +843,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 group=GROUP_ADVANCED,
             ),
         ),
-        examples=(("demo-digest-key", "<paste Digest sign bundle>", "", "", "", "", ""),),
+        examples=(Example("Verify a digest signature", {"key_name": "demo-digest-key", "digest": _MESSAGE_SHA256}),),
         consumes="Signature",
     ),
     # ── Catalogue: templates, scopes, providers ──────────────────────────────
@@ -832,9 +874,12 @@ FORMS: tuple[RpcFormSpec, ...] = (
             *_security_property_fields(),
         ),
         examples=(
-            ("", "", "", None, "", None, "", "", "", ""),
-            ("SIGNATURE_STANDARD", "", "", None, "", None, "", "", "true", ""),
-            ("AEAD_STANDARD", "ACTIVE", "", None, "", None, "", "", "", "true"),
+            Example("Every template"),
+            Example("Quantum-safe signature templates", {"scope": "SIGNATURE_STANDARD", "quantum_safe": "true"}),
+            Example(
+                "FIPS-approved AEAD templates",
+                {"scope": "AEAD_STANDARD", "allowed_statuses": "ACTIVE", "fips_approved": "true"},
+            ),
         ),
     ),
     RpcFormSpec(
@@ -842,7 +887,11 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "GetTemplate",
         "Get template",
         (FormField("template_id", "Template ID", placeholder="ml-dsa-65"),),
-        examples=(("ml-dsa-65",), ("aes-256-gcm-128-96",)),
+        examples=(
+            Example("ML-DSA-65", {"template_id": "ml-dsa-65"}),
+            Example("AES-256-GCM", {"template_id": "aes-256-gcm-128-96"}),
+        ),
+        subject="template_id",
     ),
     RpcFormSpec(
         "AlgorithmDiscoveryService",
@@ -867,10 +916,17 @@ FORMS: tuple[RpcFormSpec, ...] = (
             *_provider_requirement_fields(),
         ),
         examples=(
-            ("aes-256-gcm-128-96", False, "", False, False, False, False, False),
-            ("aes-256-gcm-128-96", True, "", False, False, False, False, False),
-            ("aes-256-gcm-128-96", False, "", False, False, False, False, True),
+            Example("Who can hold an AES-256-GCM key", {"template_id": "aes-256-gcm-128-96"}),
+            Example(
+                "AES-256-GCM key in a FIPS 140 module",
+                {"template_id": "aes-256-gcm-128-96", "require_fips_140": True},
+            ),
+            Example(
+                "AES-256-GCM key, preferring hardware acceleration",
+                {"template_id": "aes-256-gcm-128-96", "prefer_hardware_accelerated": True},
+            ),
         ),
+        subject="template_id",
     ),
     RpcFormSpec(
         "ProviderService",
@@ -882,14 +938,22 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("page_token", "Page token", optional=True),
             *_provider_requirement_fields(),
         ),
-        examples=(("", None, "", False, "", False, False, False, False, False),),
+        examples=(
+            Example("Every instance"),
+            Example("Memory-safe instances", {"require_memory_safe": True}),
+            Example("FIPS 140 instances", {"require_fips_140": True}),
+        ),
     ),
     RpcFormSpec(
         "ProviderService",
         "GetProviderInstance",
         "Get instance",
         (FormField("instance_id", "Instance ID", kind="dropdown", choices_from=PROVIDER_INSTANCES),),
-        examples=(("software",), ("openssl",)),
+        examples=(
+            Example("The pure-Go software provider", {"instance_id": "software"}),
+            Example("OpenSSL", {"instance_id": "openssl"}),
+            Example("OpenSSL with the FIPS module", {"instance_id": "openssl-fips"}),
+        ),
     ),
     RpcFormSpec(
         "ProviderService",
@@ -901,14 +965,22 @@ FORMS: tuple[RpcFormSpec, ...] = (
             FormField("page_token", "Page token", optional=True),
             *_provider_requirement_fields(),
         ),
-        examples=(("", None, "", False, "", False, False, False, False, False),),
+        examples=(
+            Example("Every provider"),
+            Example("Providers that implement ML-DSA-65", {"template_id": "ml-dsa-65"}),
+        ),
+        subject="template_id",
     ),
     RpcFormSpec(
         "ProviderService",
         "GetProvider",
         "Get provider",
         (FormField("provider_id", "Provider ID", kind="dropdown", choices_from=PROVIDER_TYPES),),
-        examples=(("openssl",),),
+        examples=(
+            Example("OpenSSL", {"provider_id": "openssl"}),
+            Example("The pure-Go software provider", {"provider_id": "software"}),
+        ),
+        subject="provider_id",
     ),
 )
 

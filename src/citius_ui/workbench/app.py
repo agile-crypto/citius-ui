@@ -458,6 +458,27 @@ def _render_input(spec: FormField) -> gr.components.Component:
     return gr.Textbox(label=label, placeholder=spec.placeholder, info=info)
 
 
+def _example_loader(spec: RpcFormSpec) -> Callable[[int], list[Any]]:
+    """Fill the form from the chosen example row.
+
+    On a form that takes a pasted bundle, an example that does not set the
+    bundle leaves it as it is, so choosing one after pasting keeps the paste.
+    """
+
+    def load(index: int) -> list[Any]:
+        example = spec.examples[index]
+        values = spec.example_values(example)
+        if spec.consumes:
+            keys = [field.key for field in spec.fields]
+            values = [
+                gr.update() if key == "bundle" and key not in example.values else value
+                for key, value in zip(keys, values, strict=True)
+            ]
+        return values
+
+    return load
+
+
 def build_workbench(
     config: AppConfig,
     sessions: SessionStore,
@@ -655,8 +676,19 @@ def build_workbench(
 
                     history_select.change(_show_selected, inputs=[history_select, bundle_state], outputs=bundle_box)
             if spec.examples:
+                headers, rows = spec.example_rows()
                 with gr.Accordion("Examples", open=True, elem_classes=["examples-zone"]):
-                    gr.Examples(examples=[list(example) for example in spec.examples], inputs=inputs)
+                    examples_table = gr.Dataset(
+                        components=[gr.Textbox(visible=False) for _ in headers],
+                        headers=headers,
+                        samples=rows,
+                        type="index",
+                        layout="table",
+                        samples_per_page=len(rows),
+                        label=None,
+                        show_label=False,
+                    )
+                examples_table.click(_example_loader(spec), inputs=examples_table, outputs=inputs)
 
             if spec.produces and history_select is not None:
                 outputs = [status_box, response_box, history_select, bundle_state, bundle_box]

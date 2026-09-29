@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from citius_ui.workbench.forms import FORMS_BY_METHOD, FormValidationError, build_request
+from citius_ui.workbench.forms import FORMS_BY_METHOD, Example, FormValidationError, build_request
 
 
 def test_build_request_drops_empty_and_none() -> None:
@@ -190,41 +190,29 @@ def test_transform_key_explains_and_exemplifies_retain_key_bytes() -> None:
     fields = {field.key: field for field in spec.fields}
     assert "template" in fields["retain_key_bytes"].help
     assert fields["template_id"].help
-    keys = [field.key for field in spec.fields]
-    retain_examples = [example for example in spec.examples if example[keys.index("retain_key_bytes")] is True]
-    assert retain_examples, "a retain-mode example is expected"
-    for example in retain_examples:
-        assert example[keys.index("template_id")], "retain examples must name a target template"
-        assert len(example) == len(keys)
+    for example in spec.examples:
+        if example.values.get("retain_key_bytes"):
+            assert example.values.get("template_id"), "retain examples must name a target template"
 
 
 def test_digest_forms_use_a_prehashed_key_created_by_an_example() -> None:
     # The catalog declares DigestSign/DigestVerify only on prehashed scopes, so
-    # the digest examples must target a key created with a prehashed template.
+    # the digest examples must target a key created with a prehashed scope.
     create = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
-    keys = [field.key for field in create.fields]
-    created = {
-        example[keys.index("name")]: (example[keys.index("template_id")], example[keys.index("scope")])
-        for example in create.examples
-    }
+    scopes = {example.values["name"]: example.values.get("scope") for example in create.examples}
     for method in ("DigestSign", "DigestVerify"):
         spec = FORMS_BY_METHOD[("CryptoService", method)]
-        key_index = [field.key for field in spec.fields].index("key_name")
         for example in spec.examples:
-            template_id, scope = created[example[key_index]]
-            assert "prehashed" in template_id
-            assert scope == "SIGNATURE_PREHASHED"
+            assert scopes[example.values["key_name"]] == "SIGNATURE_PREHASHED"
 
 
 def test_migrate_key_offers_the_implemented_strategies_with_one_target_per_example() -> None:
     spec = FORMS_BY_METHOD[("KeyManagementService", "MigrateKey")]
     fields = {field.key: field for field in spec.fields}
     assert fields["strategy"].choices == ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
-    keys = [field.key for field in spec.fields]
-    assert {example[keys.index("strategy")] for example in spec.examples} == set(fields["strategy"].choices)
+    assert {example.values["strategy"] for example in spec.examples} == set(fields["strategy"].choices)
     for example in spec.examples:
-        assert len(example) == len(keys)
-        targets = [example[keys.index("target_instance_id")], example[keys.index("target_provider_id")]]
+        targets = [example.values.get("target_instance_id"), example.values.get("target_provider_id")]
         assert sum(bool(t) for t in targets) == 1, example
 
 
@@ -236,4 +224,52 @@ def test_every_implemented_rpc_has_a_form_whose_examples_fit() -> None:
             spec = FORMS_BY_METHOD.get((service, method))
             assert spec is not None, f"{service}.{method} has no form"
             for example in spec.examples:
-                assert len(example) == len(spec.fields), f"{method}: example does not match its fields"
+                assert example.text, method
+                # Raises on a key the form does not have.
+                assert len(spec.example_values(example)) == len(spec.fields), method
+
+
+def test_example_values_fill_unset_fields_like_a_fresh_form() -> None:
+    spec = FORMS_BY_METHOD[("KeyManagementService", "MigrateKey")]
+    values = dict(zip([f.key for f in spec.fields], spec.example_values(Example("x")), strict=True))
+    assert values == {
+        "name": "",
+        "strategy": "PROVIDER_SWITCH",  # a required dropdown shows its first choice
+        "target_instance_id": "",
+        "target_provider_id": "",
+    }
+    read = FORMS_BY_METHOD[("KeyManagementService", "ReadKey")]
+    assert read.example_values(Example("x", {"name": "k"})) == ["k", None, False]
+
+
+def test_example_values_reject_a_field_the_form_does_not_have() -> None:
+    spec = FORMS_BY_METHOD[("KeyManagementService", "ReadKey")]
+    with pytest.raises(ValueError, match="nme"):
+        spec.example_values(Example("typo", {"nme": "k"}))
+
+
+def test_example_rows_name_the_subject_of_each_example() -> None:
+    create = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
+    headers, rows = create.example_rows()
+    assert headers == ["Key name", "Example"]
+    assert ["demo-signing-key", "Signature key"] in rows
+
+    providers = FORMS_BY_METHOD[("ProviderService", "ListProviders")]
+    headers, rows = providers.example_rows()
+    assert headers == ["Template ID", "Example"]
+    assert rows[0] == ["—", "Every provider"]
+
+    keys = FORMS_BY_METHOD[("KeyManagementService", "ListKeys")]
+    headers, rows = keys.example_rows()
+    assert headers == ["Example"]
+    assert rows == [["Every key"], ["Active keys on openssl"]]
+
+
+def test_choosing_a_consumer_example_keeps_a_pasted_bundle() -> None:
+    from citius_ui.workbench.app import _example_loader
+
+    spec = FORMS_BY_METHOD[("CryptoService", "Verify")]
+    values = dict(zip([f.key for f in spec.fields], _example_loader(spec)(0), strict=True))
+    assert values["key_name"] == "demo-signing-key"
+    assert values["bundle"] == {"__type__": "update"}  # left as it is
+    assert values["message"] == ""

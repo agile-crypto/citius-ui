@@ -166,7 +166,7 @@ def test_policy_form_examples_are_valid_server_rules_json() -> None:
     for method in ("CreateCryptoPolicy", "UpdateCryptoPolicy"):
         spec = FORMS_BY_METHOD[("CryptoPolicyService", method)]
         for example in spec.examples:
-            document = jsonlib.loads(str(example[1]))
+            document = jsonlib.loads(str(example.values["policy_document"]))
             # Matches the server's rules_json schema and validation rules.
             assert document["version"] == "1"
             operations = document["allowed_operations"]["key_operations"]
