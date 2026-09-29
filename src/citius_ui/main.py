@@ -474,7 +474,10 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:    %(name)s: %(message)s")
     config = AppConfig.from_env()
-    uvicorn.run(build_app(config), host=config.ui_host, port=config.ui_port)
+    # An open browser tab keeps Gradio's event stream open for as long as the
+    # tab lives, so without a limit Ctrl+C waits for it forever ("Waiting for
+    # connections to close"). After the timeout the open streams are cancelled.
+    uvicorn.run(build_app(config), host=config.ui_host, port=config.ui_port, timeout_graceful_shutdown=3)
 
 
 if __name__ == "__main__":
