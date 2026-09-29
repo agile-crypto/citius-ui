@@ -16,7 +16,9 @@ unavailable.
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -78,6 +80,27 @@ _INVENTORY_COLUMNS = (
 
 # The Workbench tab's id, so a runbook step can switch to it.
 _WORKBENCH_TAB = "workbench"
+
+# One private directory per process holds the CBOM exports. Each export
+# replaces the one before, and the directory goes when the process exits, so
+# exports do not pile up in the temp directory.
+_cbom_dir: Path | None = None
+
+
+def _write_cbom(bom: dict[str, Any]) -> Path:
+    """Write ``bom`` as the only file in the process's CBOM directory."""
+    global _cbom_dir  # noqa: PLW0603 - one directory for the life of the process
+    if _cbom_dir is None or not _cbom_dir.is_dir():
+        _cbom_dir = Path(tempfile.mkdtemp(prefix="citius-cbom-"))
+        atexit.register(shutil.rmtree, _cbom_dir, ignore_errors=True)
+    for old in _cbom_dir.glob("citius-cbom-*.json"):
+        old.unlink(missing_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = _cbom_dir / f"citius-cbom-{stamp}.json"
+    path.write_text(json.dumps(bom, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
 
 # Service -> accent class, for the services with at least one implemented RPC
 # (the rest render as an unaccented, muted card).
@@ -585,9 +608,7 @@ def build_workbench(
             except Exception:  # noqa: BLE001 - closing must never mask the result
                 pass
         rows = [[row[column] for column in _INVENTORY_COLUMNS] for row in inventory.table()]
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = Path(tempfile.mkdtemp(prefix="citius-cbom-")) / f"citius-cbom-{stamp}.json"
-        path.write_text(json.dumps(to_cyclonedx(inventory), indent=2), encoding="utf-8")
+        path = _write_cbom(to_cyclonedx(inventory))
         return render_inventory(inventory), rows, gr.update(value=str(path), visible=True)
 
     def _render_service_card(service: str, *, open_by_default: bool) -> None:
@@ -692,6 +713,8 @@ def build_workbench(
         theme=gr.themes.Base(font=["IBM Plex Sans", "Arial", "sans-serif"]),
         css=CSS,
         fill_width=True,
+        # Gradio copies each download into its cache; drop copies after an hour.
+        delete_cache=(3600, 3600),
     ) as blocks:
         # The theme toggle floats in the top-right corner via CSS (position:
         # fixed) so it is always reachable without competing with the title

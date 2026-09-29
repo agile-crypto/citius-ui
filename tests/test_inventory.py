@@ -200,3 +200,12 @@ def test_cbom_reports_primitives_cyclonedx_lacks_as_other_and_combiners_as_key_p
     }
     assert materials == {"hybrid-key": "private-key", "wrap-key": "secret-key"}
 
+
+def test_each_cbom_export_replaces_the_last() -> None:
+    from citius_ui.workbench.app import _write_cbom
+
+    first = _write_cbom({"n": 1})
+    second = _write_cbom({"n": 2})
+    assert first.parent == second.parent
+    assert list(second.parent.glob("citius-cbom-*.json")) == [second]
+    assert second.stat().st_mode & 0o777 == 0o600
