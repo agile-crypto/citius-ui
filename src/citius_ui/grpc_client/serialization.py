@@ -6,6 +6,7 @@ import base64
 
 import grpc
 from citius_sdk.errors import (
+    AlreadyExistsError,
     AuthenticationError,
     CitiusError,
     DeadlineExceededError,
@@ -33,6 +34,7 @@ _ERROR_STATUS: dict[type[CitiusError], ResultStatus] = {
     UnimplementedError: ResultStatus.UNIMPLEMENTED,
     UnavailableError: ResultStatus.UNAVAILABLE,
     DeadlineExceededError: ResultStatus.DEADLINE_EXCEEDED,
+    AlreadyExistsError: ResultStatus.ALREADY_EXISTS,
 }
 
 
@@ -52,10 +54,25 @@ def encode_bytes(value: bytes) -> dict[str, str]:
 def error_result(error: CitiusError) -> RpcResult:
     """Map an SDK error to a normalized failed RpcResult."""
     status = _ERROR_STATUS.get(type(error), ResultStatus.ERROR)
-    denial_reason = None
-    if status is ResultStatus.PERMISSION_DENIED:
-        denial_reason = "resource_pattern" if "resource" in error.message else "method_permission"
+    denial_reason = _denial_reason(error.message) if status is ResultStatus.PERMISSION_DENIED else None
     return RpcResult(status=status, message=error.message, denial_reason=denial_reason)
+
+
+def _denial_reason(message: str) -> str | None:
+    """A hint of which check refused a call, read from the server's message.
+
+    The server sends only the status code and message (decision A1), so this
+    is a hint. The auth layer says 'resource "name" ...' when a key or policy
+    name pattern refuses, and 'missing permission ...' or 'no policy
+    registered for method ...' when the method check does. Any other refusal,
+    such as a crypto policy's, is not guessed at.
+    """
+    lowered = message.lower()
+    if "resource" in lowered:
+        return "resource_pattern"
+    if "missing permission" in lowered or "no policy registered" in lowered:
+        return "method_permission"
+    return None
 
 
 def invalid_result(error: Exception) -> RpcResult:

@@ -45,12 +45,22 @@ def test_error_result_maps_authentication() -> None:
 
 
 def test_error_result_distinguishes_resource_denial() -> None:
-    method_denied = error_result(PermissionDeniedError(grpc.StatusCode.PERMISSION_DENIED, "missing citius:crypto:sign"))
-    resource_denied = error_result(
-        PermissionDeniedError(grpc.StatusCode.PERMISSION_DENIED, "cannot access resource 'demo-x'")
-    )
-    assert method_denied.denial_reason == "method_permission"
-    assert resource_denied.denial_reason == "resource_pattern"
+    def denied(message: str) -> str | None:
+        return error_result(PermissionDeniedError(grpc.StatusCode.PERMISSION_DENIED, message)).denial_reason
+
+    # The messages the server's auth layer sends.
+    assert denied('missing permission "citius:crypto:sign"') == "method_permission"
+    assert denied("no policy registered for method /caas.crypto.v1.CryptoService/Sign") == "method_permission"
+    assert denied('resource "demo-x" does not match any allow pattern') == "resource_pattern"
+    # A crypto policy's refusal is not labelled as either.
+    assert denied("operation SIGN is not allowed by policy demo-policy") is None
+
+
+def test_error_result_maps_already_exists() -> None:
+    from citius_sdk.errors import AlreadyExistsError
+
+    result = error_result(AlreadyExistsError(grpc.StatusCode.ALREADY_EXISTS, "key demo-x exists"))
+    assert result.status is ResultStatus.ALREADY_EXISTS
 
 
 def test_error_result_maps_failed_precondition() -> None:
