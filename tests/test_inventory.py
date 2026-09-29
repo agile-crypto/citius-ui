@@ -176,3 +176,27 @@ def test_cbom_does_not_guess_the_type_of_a_key_whose_template_is_unknown() -> No
     bom = to_cyclonedx(inv)
     orphan = next(c for c in bom["components"] if c["bom-ref"] == "key:orphan-key")
     assert orphan["cryptoProperties"]["relatedCryptoMaterialProperties"]["type"] == "key"
+
+
+def test_cbom_reports_primitives_cyclonedx_lacks_as_other_and_combiners_as_key_pairs() -> None:
+    templates = {
+        "aes-256-kw": _template("aes-256-kw", name="AES-256-KW", primitive="key-wrap", quantum=False),
+        "x25519-ml-kem-768": _template("x25519-ml-kem-768", name="X25519MLKEM768", primitive="combiner", quantum=True),
+    }
+    response = ListKeysResponse()
+    for name, template in (("wrap-key", "aes-256-kw"), ("hybrid-key", "x25519-ml-kem-768")):
+        response.keys.add(name=name, version=1, template_id=template, provider="software")
+    bom = to_cyclonedx(build_inventory(ListKeysResult(response).keys, templates, {}))
+    by_ref = {c["bom-ref"]: c for c in bom["components"]}
+
+    wrap = by_ref["algorithm:aes-256-kw"]
+    assert wrap["cryptoProperties"]["algorithmProperties"]["primitive"] == "other"
+    assert {"name": "citius:primitive", "value": "key-wrap"} in wrap["properties"]
+    assert by_ref["algorithm:x25519-ml-kem-768"]["cryptoProperties"]["algorithmProperties"]["primitive"] == "combiner"
+    materials = {
+        c["name"]: c["cryptoProperties"]["relatedCryptoMaterialProperties"]["type"]
+        for c in bom["components"]
+        if c["cryptoProperties"]["assetType"] == "related-crypto-material"
+    }
+    assert materials == {"hybrid-key": "private-key", "wrap-key": "secret-key"}
+

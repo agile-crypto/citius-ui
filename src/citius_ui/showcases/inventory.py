@@ -35,8 +35,29 @@ _PAGE_SIZE = 200
 _MAX_PAGES = 50
 
 # CycloneDX primitives whose keys are key pairs; every other primitive uses a
-# secret key.
-_ASYMMETRIC_PRIMITIVES = {"signature", "kem", "key-agree", "pke"}
+# secret key. A combiner (a hybrid KEM or signature) joins key pairs.
+_ASYMMETRIC_PRIMITIVES = {"signature", "kem", "key-agree", "pke", "combiner"}
+
+# The primitives CycloneDX 1.6 defines. The catalogue uses others (key-wrap),
+# which a 1.6 CBOM must report as "other", keeping the catalogue's name in a
+# property.
+_CYCLONEDX_PRIMITIVES = {
+    "drbg",
+    "mac",
+    "block-cipher",
+    "stream-cipher",
+    "signature",
+    "hash",
+    "pke",
+    "xof",
+    "kdf",
+    "key-agree",
+    "kem",
+    "ae",
+    "combiner",
+    "other",
+    "unknown",
+}
 
 _CYCLONEDX_STATE = {
     "KEY_LIFECYCLE_STATE_PRE_ACTIVE": "pre-activation",
@@ -236,7 +257,8 @@ def _code(error: CitiusError) -> str:
 
 def _algorithm_component(template_id: str, template: Any) -> dict[str, Any]:
     cdx = template.cyclonedx
-    properties: dict[str, Any] = {"primitive": cdx.primitive or "unknown"}
+    primitive = cdx.primitive or "unknown"
+    properties: dict[str, Any] = {"primitive": primitive if primitive in _CYCLONEDX_PRIMITIVES else "other"}
     for field, value in (
         ("parameterSetIdentifier", cdx.parameter_set_identifier),
         ("curve", cdx.elliptic_curve),
@@ -266,6 +288,8 @@ def _algorithm_component(template_id: str, template: Any) -> dict[str, Any]:
     }
     if cdx.algorithm_family:
         component["properties"].append({"name": "citius:algorithm_family", "value": cdx.algorithm_family})
+    if primitive not in _CYCLONEDX_PRIMITIVES:
+        component["properties"].append({"name": "citius:primitive", "value": primitive})
     return component
 
 
