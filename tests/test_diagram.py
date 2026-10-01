@@ -5,13 +5,21 @@ import dataclasses
 from citius_ui.showcases.diagram import (
     FILL,
     NEXT_FILL,
+    PROOF_MARK,
     goal_card,
     next_step,
     sequence_diagram,
 )
 from citius_ui.showcases.model import Runbook, StepState
 from citius_ui.showcases.replay import StepResult
-from citius_ui.showcases.runbooks import R3_POLICY, R4_AGILITY, RUNBOOKS
+from citius_ui.showcases.runbooks import (
+    R1_INTENT,
+    R3_POLICY,
+    R4_AGILITY,
+    RUNBOOKS,
+    SHOWCASE_CHOOSE,
+    SHOWCASE_USE,
+)
 
 
 def _result(runbook: Runbook, index: int, state: StepState, status: str = "OK", detail: str = "") -> StepResult:
@@ -76,23 +84,45 @@ def test_mermaid_separators_in_step_text_are_escaped() -> None:
     assert "demo-a#59;b#35;c" in text and "demo-a;b" not in text
 
 
-def test_goal_card_shows_a_proof_in_bold_once_all_its_steps_passed() -> None:
+def test_goal_card_ticks_a_proof_once_all_its_steps_passed() -> None:
+    pending, proven, refused = (PROOF_MARK[s] for s in (StepState.NOT_RUN, StepState.PASSED, StepState.FAILED))
     goal = R4_AGILITY.goal
     assert goal is not None
     card = goal_card(R4_AGILITY)
     assert card.startswith(f"**{goal.claim}**")
     assert f"{goal.before} → **{goal.after}**" in card
-    assert "1. ECDSA to ML-DSA under the same name (steps 2, 4)" in card
-    assert "**" not in card.split("\n", 3)[3]  # no proof is shown yet
+    assert f"{pending}ECDSA to ML-DSA under the same name · steps 2, 4" in card
+    assert proven not in card and f"**Proven: 0 of {len(goal.proofs)}**" in card
 
     results = {i: _result(R4_AGILITY, i, StepState.PASSED) for i in (2, 3, 4)}
     card = goal_card(R4_AGILITY, results)
-    assert "1. **ECDSA to ML-DSA under the same name** (steps 2, 4)" in card
+    assert f"{proven}**ECDSA to ML-DSA under the same name** · steps 2, 4" in card
     # Step 5 has not run, so the second proof is not shown yet.
-    assert "2. The old signature still verifies (steps 3, 5)" in card
+    assert f"{pending}The old signature still verifies · steps 3, 5" in card
+    assert f"**Proven: 1 of {len(goal.proofs)}**" in card
+
+    results[5] = _result(R4_AGILITY, 5, StepState.FAILED, status="NOT_FOUND")
+    card = goal_card(R4_AGILITY, results)
+    assert f"{refused}The old signature still verifies · steps 3, 5: not as expected" in card
+
+
+def test_goal_card_shows_the_values_that_prove_a_claim() -> None:
+    step = SHOWCASE_CHOOSE.steps[2]
+    result = StepResult(
+        3,
+        step,
+        "OK",
+        StepState.PASSED,
+        request={"name": "demo-pqc-signing-key", "quantum_safe": "true"},
+        response={"key_metadata": {"template_id": "ml-dsa-65"}},
+    )
+    card = goal_card(SHOWCASE_CHOOSE, {3: result})
+    proven = PROOF_MARK[StepState.PASSED]
+    assert f"{proven}**A filter narrows the choice** · quantum_safe `true` → `ml-dsa-65` · step 3" in card
+    # A runbook that continues another says so.
+    assert "_Continues from 1 · Choose._" in goal_card(SHOWCASE_USE)
 
 
 def test_goal_card_joins_consecutive_steps() -> None:
-    r1 = RUNBOOKS[0]
-    assert "(steps 2–8)" in goal_card(r1)
-    assert "(step 2)" in goal_card(R3_POLICY)
+    assert "· steps 2–8" in goal_card(R1_INTENT)
+    assert "· step 2" in goal_card(R3_POLICY)

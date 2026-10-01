@@ -26,7 +26,7 @@ from typing import Any
 
 from citius_ui.actions.model import ResultStatus, RpcAction, RpcResult
 from citius_ui.actions.registry import ActionRegistry
-from citius_ui.showcases.model import ACCEPTED_STATUS, ExpectedOutcome, Runbook, RunbookStep, StepState
+from citius_ui.showcases.model import ACCEPTED_STATUS, Evidence, ExpectedOutcome, Runbook, RunbookStep, StepState
 from citius_ui.showcases.runbooks import RUNBOOKS, look_up
 from citius_ui.workbench.forms import FORMS_BY_METHOD, build_request
 
@@ -134,9 +134,33 @@ async def run_step(
     )
 
 
-async def replay(runbook: Runbook, registry: ActionRegistry, *, identities: bool = False) -> list[StepResult]:
-    """Run every step of a runbook in order. Stops at nothing: each step reports its own result."""
-    bundles: dict[str, str] = {}
+def evidence(item: Evidence, results: Mapping[int, StepResult]) -> object:
+    """The value an Evidence names in a run's results, or None if its step has not run or it is absent."""
+    result = results.get(item.step)
+    if result is None:
+        return None
+    if item.path == "status":
+        return result.status or None
+    if item.path == "request":
+        return list(result.request) or None
+    if item.path.startswith("request."):
+        return look_up(result.request, item.path.removeprefix("request."))
+    return look_up(result.response, item.path)
+
+
+async def replay(
+    runbook: Runbook,
+    registry: ActionRegistry,
+    *,
+    identities: bool = False,
+    bundles: dict[str, str] | None = None,
+) -> list[StepResult]:
+    """Run every step of a runbook in order. Stops at nothing: each step reports its own result.
+
+    Pass the same ``bundles`` to runbooks run one after another, so a runbook
+    can paste bundles an earlier one kept (see ``Runbook.after``).
+    """
+    bundles = {} if bundles is None else bundles
     results = []
     for index, step in enumerate(runbook.steps, start=1):
         if step.expected in _IDENTITY_OUTCOMES and not identities:
@@ -180,12 +204,14 @@ async def _main(endpoint: str, keys: Iterable[str]) -> int:
     clients = _clients(endpoint)
     registry = build_registry(clients)
     failures = 0
+    # Shared in order, so a showcase runbook gets the bundles the one before kept.
+    bundles: dict[str, str] = {}
     try:
         for runbook in RUNBOOKS:
             if wanted and runbook.key not in wanted:
                 continue
             print(f"\n{runbook.title}")
-            for r in await replay(runbook, registry):
+            for r in await replay(runbook, registry, bundles=bundles):
                 mark = _MARK[r.state]
                 failures += not r.passed
                 print(f"  {mark} {r.index:2}. {r.step.method:<22} {r.step.title} {r.status}  {r.detail}".rstrip())

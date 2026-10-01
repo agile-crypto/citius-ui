@@ -89,11 +89,29 @@ class RunbookStep:
 
 
 @dataclass(frozen=True, slots=True)
+class Evidence:
+    """A value from a step's run that shows a proof, printed next to it once shown.
+
+    ``path`` is a dotted path into the step's response. ``request.<path>``
+    reads what was sent instead, ``request`` alone lists the fields sent, and
+    ``status`` is the status code. A JSON string on the way is read as JSON,
+    and ``*`` takes the value from every item of a list, joined by ``join``.
+    ``label`` is printed before the value.
+    """
+
+    step: int
+    path: str
+    label: str = ""
+    join: str = ", "
+
+
+@dataclass(frozen=True, slots=True)
 class Proof:
-    """One thing a runbook proves, and the steps (numbered from 1) that prove it."""
+    """One thing a runbook proves, the steps (numbered from 1) that prove it, and the values that show it."""
 
     text: str
     steps: tuple[int, ...]
+    shows: tuple[Evidence, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,13 +131,18 @@ class Goal:
 
 @dataclass(frozen=True, slots=True)
 class Runbook:
-    """A named multi-browser demonstration composed of documented steps."""
+    """A named multi-browser demonstration composed of documented steps.
+
+    ``after`` names the runbooks (by key) that must run first: this one uses
+    their keys, and pastes bundles their steps keep.
+    """
 
     key: str
     title: str
     summary: str
     steps: tuple[RunbookStep, ...] = field(default_factory=tuple)
     goal: Goal | None = None
+    after: tuple[str, ...] = ()
 
     def required_actions(self) -> set[tuple[str, str]]:
         """Return the (service, method) pairs the runbook references."""

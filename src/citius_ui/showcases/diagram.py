@@ -4,8 +4,9 @@ Both are Markdown for ``gr.Markdown``, which renders fenced ``mermaid``
 blocks. Each step is one request from its persona to Citius and the reply
 the step expects, numbered as the UI numbers steps. Once a step has run, its
 request and reply sit on a band coloured by how it went, and the first step
-not yet run is marked as next. The goal card shows a proof in full once
-every step it names went as expected.
+not yet run is marked as next. The goal card is a checklist of the proofs:
+each is ticked, with the values that show it, once every step it names went
+as expected.
 """
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 
-from citius_ui.showcases.model import ExpectedOutcome, Runbook, RunbookStep, StepState
-from citius_ui.showcases.replay import StepResult
+from citius_ui.showcases.model import ExpectedOutcome, Proof, Runbook, RunbookStep, StepState
+from citius_ui.showcases.replay import StepResult, evidence
+from citius_ui.showcases.runbooks import RUNBOOKS_BY_KEY
 
 Results = Mapping[int, StepResult]
 
@@ -140,15 +142,77 @@ def _numbers(steps: Iterable[int]) -> str:
     return f"{label} {', '.join(parts)}"
 
 
+def _value(value: object, join: str) -> str:
+    if isinstance(value, list):
+        return join.join(_value(item, join) for item in value)
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).replace("`", "'")
+
+
+def _evidence(proof: Proof, results: Results) -> str:
+    """The values that show a proof, each with its label: "sent `name, scope`, version `1`".
+
+    An item whose label starts with an arrow continues the one before it:
+    "quantum_safe `true` → `ml-dsa-65`".
+    """
+    text = ""
+    for item in proof.shows:
+        shown = f"`{_value(evidence(item, results), item.join)}`"
+        part = f"{item.label} {shown}" if item.label else shown
+        if text:
+            text += " " if item.label.startswith("→") else ", "
+        text += part
+    return text
+
+
+def proof_state(proof: Proof, results: Results) -> StepState:
+    """PASSED once every step of a proof went as expected; FAILED once one did not; else NOT_RUN."""
+    states = [state_of(results, index) for index in proof.steps]
+    if any(state in (StepState.FAILED, StepState.DIFFERS) for state in states):
+        return StepState.FAILED
+    if all(state is StepState.PASSED for state in states):
+        return StepState.PASSED
+    return StepState.NOT_RUN
+
+
+# A proof's mark on the goal card, styled by the Workbench (.proof-mark).
+PROOF_MARK = {
+    StepState.PASSED: '<span class="proof-mark proven">✓</span>',
+    StepState.FAILED: '<span class="proof-mark refused">✕</span>',
+    StepState.NOT_RUN: '<span class="proof-mark pending">○</span>',
+}
+
+
 def goal_card(runbook: Runbook, results: Results | None = None) -> str:
-    """The runbook's goal: its claim, before and after, and the proofs, in bold once shown."""
+    """The runbook's goal: its claim, before and after, and a checklist of its proofs.
+
+    A proof is ○ until every step it names has gone as expected, then ✓ in
+    bold, with the values from those steps' requests and responses that show
+    it. A step that did not go as expected marks its proofs ✕.
+    """
     goal = runbook.goal
     if goal is None:
         return ""
     results = results or {}
-    lines = [f"**{goal.claim}**  ", f"{goal.before} → **{goal.after}**", ""]
-    for number, proof in enumerate(goal.proofs, start=1):
-        shown = all(state_of(results, index) is StepState.PASSED for index in proof.steps)
-        text = f"**{proof.text}**" if shown else proof.text
-        lines.append(f"{number}. {text} ({_numbers(proof.steps)})")
-    return "\n".join(lines)
+    states = [proof_state(proof, results) for proof in goal.proofs]
+    proven = sum(state is StepState.PASSED for state in states)
+    checklist = []
+    for proof, state in zip(goal.proofs, states, strict=True):
+        where = _numbers(proof.steps)
+        mark = PROOF_MARK[state]
+        if state is StepState.PASSED:
+            shown = _evidence(proof, results)
+            checklist.append(f"{mark}**{proof.text}**" + (f" · {shown}" if shown else "") + f" · {where}")
+        elif state is StepState.FAILED:
+            checklist.append(f"{mark}{proof.text} · {where}: not as expected")
+        else:
+            checklist.append(f"{mark}{proof.text} · {where}")
+    parts = [f"**{goal.claim}**  \n{goal.before} → **{goal.after}**"]
+    if runbook.after:
+        titles = [RUNBOOKS_BY_KEY[key].title if key in RUNBOOKS_BY_KEY else key for key in runbook.after]
+        parts.append(f"_Continues from {', '.join(titles)}._")
+    parts += ["  \n".join(checklist), f"**Proven: {proven} of {len(goal.proofs)}**"]
+    return "\n\n".join(parts)
