@@ -473,9 +473,11 @@ def _example_loader(spec: RpcFormSpec) -> Callable[[int], list[Any]]:
 
     On a form that takes a pasted bundle, an example that does not set the
     bundle leaves it as it is, so choosing one after pasting keeps the paste.
+    A form with one field gets the bare value: Gradio would put a returned
+    list into that single field as it is.
     """
 
-    def load(index: int) -> list[Any]:
+    def load(index: int) -> Any:
         example = spec.examples[index]
         values = spec.example_values(example)
         if spec.consumes:
@@ -484,7 +486,7 @@ def _example_loader(spec: RpcFormSpec) -> Callable[[int], list[Any]]:
                 gr.update() if key == "bundle" and key not in example.values else value
                 for key, value in zip(keys, values, strict=True)
             ]
-        return values
+        return values[0] if len(values) == 1 else values
 
     return load
 

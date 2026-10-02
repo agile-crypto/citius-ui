@@ -273,3 +273,11 @@ def test_choosing_a_consumer_example_keeps_a_pasted_bundle() -> None:
     assert values["key_name"] == "demo-signing-key"
     assert values["bundle"] == {"__type__": "update"}  # left as it is
     assert values["message"] == ""
+
+
+def test_a_one_field_example_fills_the_field_with_the_bare_value() -> None:
+    from citius_ui.workbench.app import _example_loader
+
+    spec = FORMS_BY_METHOD[("CryptoPolicyService", "ReadCryptoPolicy")]
+    assert len(spec.fields) == 1
+    assert _example_loader(spec)(0) == "demo-signing-policy"
