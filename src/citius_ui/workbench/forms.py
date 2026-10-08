@@ -2,9 +2,11 @@
 
 Each form declares the request fields exposed directly in the UI, aligned with
 the Citius protobuf request messages in api/proto and with the request keys the
-corresponding action reads. Advanced or mutually-exclusive scope/context
-parameters are represented as an optional JSON overrides block rather than a
-generated widget per oneof branch.
+corresponding action reads. Optional properties that together make one API
+message (UniversalSecurityProperties, ProviderRequirements) form a property
+section: the form shows only the ones that are set. Advanced or
+mutually-exclusive scope/context parameters are an optional JSON overrides
+block rather than a generated widget per oneof branch.
 """
 
 from __future__ import annotations
@@ -24,9 +26,11 @@ from citius_ui.workbench.catalogue import PROVIDER_INSTANCES, PROVIDER_TYPES, SC
 class FormField:
     """One request field rendered as an individual control.
 
-    ``group`` places the field inside a collapsible section (added on demand)
-    rather than the always-visible core of the form; an empty group means the
-    field is a core field shown up front.
+    ``group`` places the field inside a collapsible section rather than the
+    always-visible core of the form. ``section`` makes it one property of a
+    property section (see ``PropertySection``), shown only once it is set or
+    added. A field has at most one of the two; with neither it is a core
+    field shown up front.
 
     ``choices_from`` names a server catalogue (see ``catalogue``) whose
     entries replace ``choices`` once the page has read it.
@@ -34,13 +38,41 @@ class FormField:
 
     key: str
     label: str
-    kind: str = "text"  # text | area | number | bool | dropdown
+    kind: str = "text"  # text | area | number | bool | dropdown | radio
     placeholder: str = ""
     choices: tuple[str, ...] = ()
     optional: bool = False
     group: str = ""
     help: str = ""
     choices_from: str = ""
+    section: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PropertySection:
+    """Optional properties that together make one message of the request.
+
+    Every property in it is optional, and an unset one means "no
+    constraint", so the form lists only the properties that are set, and
+    offers the rest to add. ``message`` says where they go in the request.
+    """
+
+    key: str
+    title: str
+    message: str
+
+
+SECTION_SECURITY = PropertySection(
+    "security",
+    "Security properties: which algorithms qualify",
+    "UniversalSecurityProperties, inside the scope specification",
+)
+SECTION_REQUIREMENTS = PropertySection(
+    "requirements",
+    "Provider requirements: which implementations qualify",
+    "ProviderRequirements",
+)
+SECTIONS: tuple[PropertySection, ...] = (SECTION_SECURITY, SECTION_REQUIREMENTS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +107,9 @@ class RpcFormSpec:
     # The field shown as the examples' name column; blank picks the first of
     # _SUBJECT_FIELDS the form has. A form with neither shows no name column.
     subject: str = ""
+    # Per property section the form has (by key): what the server does when
+    # none of its properties is set.
+    when_unset: Mapping[str, str] = _field(default_factory=lambda: MappingProxyType({}))
 
     def subject_field(self) -> FormField | None:
         keys = (self.subject,) if self.subject else _SUBJECT_FIELDS
@@ -89,7 +124,7 @@ class RpcFormSpec:
         unknown = set(example.values) - {f.key for f in self.fields}
         if unknown:
             raise ValueError(f"{self.method} example {example.text!r} sets unknown field(s) {sorted(unknown)}")
-        return [example.values[f.key] if f.key in example.values else _blank(f) for f in self.fields]
+        return [example.values[f.key] if f.key in example.values else blank_value(f) for f in self.fields]
 
     def example_rows(self) -> tuple[list[str], list[list[str]]]:
         """The examples table: its headers and one row per example."""
@@ -100,11 +135,19 @@ class RpcFormSpec:
         return [subject.label, "Example"], rows
 
     def core_fields(self) -> tuple[FormField, ...]:
-        """Fields shown up front (no group), in declaration order."""
-        return tuple(field for field in self.fields if not field.group)
+        """Fields shown up front (no group, no section), in declaration order."""
+        return tuple(field for field in self.fields if not field.group and not field.section)
+
+    def sections(self) -> tuple[tuple[PropertySection, tuple[FormField, ...]], ...]:
+        """The property sections the form has, each with its fields in declaration order."""
+        return tuple(
+            (section, fields)
+            for section in SECTIONS
+            if (fields := tuple(field for field in self.fields if field.section == section.key))
+        )
 
     def grouped_fields(self) -> tuple[tuple[str, tuple[FormField, ...]], ...]:
-        """Optional filter sections as ``(group_name, fields)`` in first-seen order."""
+        """Collapsible sections as ``(group_name, fields)`` in first-seen order."""
         order: list[str] = []
         by_group: dict[str, list[FormField]] = {}
         for field in self.fields:
@@ -117,11 +160,8 @@ class RpcFormSpec:
         return tuple((name, tuple(by_group[name])) for name in order)
 
 
-# Collapsible filter-section names for the key-creation form, aligned with the
-# API: UniversalSecurityProperties, per-scope primitive properties, and
-# ProviderRequirements. An advanced section exposes the raw JSON escape hatches.
-GROUP_UNIVERSAL = "Universal security properties"
-GROUP_PROVIDER = "Provider requirements"
+# Collapsible sections: the raw JSON escape hatches, and the consumer RPCs'
+# manual entry of what a pasted bundle otherwise fills.
 GROUP_ADVANCED = "Advanced — raw JSON overrides"
 # Consumer RPCs (Verify/Decrypt) take a pasted bundle up front; the raw
 # value + metadata fields it fills are demoted into this manual section.
@@ -131,30 +171,53 @@ GROUP_MANUAL = "Advanced — enter value and metadata manually"
 _POLICY_FORMATS = ("json", "rego", "cedar", "yaml")
 
 # What a field an example leaves out is set to: what a fresh form shows.
-_BLANK: dict[str, object] = {"bool": False, "number": None}
+_BLANK: dict[str, object] = {"bool": False, "number": None, "radio": None}
 
 
-def _blank(field: FormField) -> object:
+def blank_value(field: FormField) -> object:
+    """What a fresh form shows in a field."""
     if field.kind == "dropdown" and field.choices and not field.optional:
         return field.choices[0]
     return _BLANK.get(field.kind, "")
+
+
+def is_set(field: FormField, value: object) -> bool:
+    """Whether a value is sent: a ticked box, or anything but a blank."""
+    if field.kind == "bool":
+        return value is True
+    if isinstance(value, str):
+        return value.strip() != ""
+    return value is not None
+
+
+def value_when_added(field: FormField) -> object:
+    """The value a section property takes when it is added to the form.
+
+    A requirement is ticked and a yes/no property is true, which is why one
+    adds them; a property with a range of values starts blank, to be chosen.
+    """
+    if field.kind == "bool":
+        return True
+    if field.kind == "radio":
+        return field.choices[0]
+    return blank_value(field)
 
 
 # The message the Sign examples use, and its SHA-256 (base64) for the digest ones.
 _MESSAGE = "Hello from Citius"
 _MESSAGE_SHA256 = "dd37/hdyzzn7BLltwfCmNXDQt612QJj3aIVjbPLQQKA="
 
-# Full intent-oriented scope vocabulary, sourced from the SDK Scope enum so the
-# dropdown and the SDK stay in lock-step. A blank leading entry keeps "infer
-# from template" as the default.
-_KEY_SCOPES: tuple[str, ...] = ("", *(scope.name for scope in _sdk.Scope))
+# The scope vocabulary, from the SDK Scope enum so the dropdown and the SDK
+# stay in lock-step. The blank first entry is what a fresh form shows: a key's
+# scope is required, and left for the user to choose rather than preset.
+_SCOPE_CHOICES: tuple[str, ...] = ("", *(scope.name for scope in _sdk.Scope))
 
-# Optional filter-property choices, aligned with the SDK enums. A blank entry
-# means "leave unset" so the property is not sent to the server.
-_NIST_LEVELS: tuple[str, ...] = ("", *(level.name for level in _sdk.NistSecurityLevel))
-_NIST_STATUSES: tuple[str, ...] = ("", *(status.name for status in _sdk.NistStatus))
-_FIPS_LEVELS: tuple[str, ...] = ("", *(level.name for level in _sdk.Fips140Level))
-_TRISTATE: tuple[str, ...] = ("", "true", "false")
+# Property values, aligned with the SDK enums. A property that is not set is
+# not sent, so no choice stands for "unset".
+_NIST_LEVELS: tuple[str, ...] = tuple(level.name for level in _sdk.NistSecurityLevel if level.value)
+_NIST_STATUSES: tuple[str, ...] = tuple(status.name for status in _sdk.NistStatus if status.value)
+_FIPS_LEVELS: tuple[str, ...] = tuple(level.name for level in _sdk.Fips140Level if level.value)
+_TRUE_FALSE: tuple[str, ...] = ("true", "false")
 _HASH_ALGORITHMS: tuple[str, ...] = ("", *(algorithm.name for algorithm in _sdk.HashAlgorithm))
 # The MigrateKey strategies the server implements; the others return Unimplemented.
 _MIGRATION_STRATEGIES: tuple[str, ...] = ("PROVIDER_SWITCH", "REKEY_AND_ARCHIVE")
@@ -217,37 +280,50 @@ _SAMPLE_SIGNING_POLICY_V2 = json.dumps(
 )
 
 
-# ── Shared scope-specification fields ─────────────────────────────────────────
+# ── Shared scope, security-property and provider-requirement fields ───────────
 #
-# CreateKeyRequest and TransformKeyRequest expose the SAME scope-selection
-# surface in the proto: a ScopeSpecification (scope + UniversalSecurityProperties
-# + per-scope primitive properties) plus an optional template_id. Building those
-# fields from one place keeps both forms in lock-step, so a future change to the
-# scope/security vocabulary shows up in Create AND Transform automatically.
+# CreateKeyRequest and TransformKeyRequest carry the same ScopeSpecification
+# (a scope, with UniversalSecurityProperties) beside an optional template_id;
+# ListTemplates filters by the same specification. ProviderRequirements is on
+# CreateKey and on the provider RPCs. Building the fields in one place keeps
+# every form that carries a message in lock-step with it.
 
 
 def _scope_field() -> FormField:
-    """The core scope dropdown shared by CreateKey and TransformKey."""
+    """The scope of CreateKey and TransformKey: required, even when a template is named."""
     return FormField(
         "scope",
-        "Scope (inferred from template when blank)",
+        "Scope",
         kind="dropdown",
-        choices=_KEY_SCOPES,
-        optional=True,
+        choices=_SCOPE_CHOICES,
         choices_from=SCOPES,
-        help="Lists the scopes the server's template catalogue offers.",
+        help=(
+            "What the key is for. Always given: a template can serve more than one scope "
+            "(ml-dsa-65 serves SIGNATURE_STANDARD and SIGNATURE_WITH_CONTEXT)."
+        ),
     )
 
 
 def _security_property_fields() -> tuple[FormField, ...]:
-    """UniversalSecurityProperties filters shared by CreateKey and TransformKey."""
+    """The UniversalSecurityProperties a request can ask for; each one narrows the templates."""
+    security = SECTION_SECURITY.key
     return (
         FormField(
+            "quantum_safe",
+            "Quantum-safe",
+            kind="radio",
+            choices=_TRUE_FALSE,
+            optional=True,
+            section=security,
+            help="Whether the algorithm must resist attacks by a quantum computer.",
+        ),
+        FormField(
             "security_strength_bits",
-            "Min security strength (bits)",
+            "Minimum security strength (bits)",
             kind="number",
             optional=True,
-            group=GROUP_UNIVERSAL,
+            section=security,
+            help="At least this classical security strength, e.g. 128, 192 or 256.",
         ),
         FormField(
             "nist_security_level",
@@ -255,7 +331,8 @@ def _security_property_fields() -> tuple[FormField, ...]:
             kind="dropdown",
             choices=_NIST_LEVELS,
             optional=True,
-            group=GROUP_UNIVERSAL,
+            section=security,
+            help="At least this NIST post-quantum security level (1 to 5).",
         ),
         FormField(
             "nist_status",
@@ -263,18 +340,17 @@ def _security_property_fields() -> tuple[FormField, ...]:
             kind="dropdown",
             choices=_NIST_STATUSES,
             optional=True,
-            group=GROUP_UNIVERSAL,
-        ),
-        FormField(
-            "quantum_safe", "Quantum-safe", kind="dropdown", choices=_TRISTATE, optional=True, group=GROUP_UNIVERSAL
+            section=security,
+            help="The NIST standardisation status the algorithm must have.",
         ),
         FormField(
             "fips_approved",
-            "FIPS approved",
-            kind="dropdown",
-            choices=_TRISTATE,
+            "FIPS-approved algorithm",
+            kind="radio",
+            choices=_TRUE_FALSE,
             optional=True,
-            group=GROUP_UNIVERSAL,
+            section=security,
+            help="Whether the algorithm must be FIPS-approved. A certified module is a provider requirement.",
         ),
     )
 
@@ -283,7 +359,7 @@ def _scope_spec_field() -> FormField:
     """The advanced full-ScopeSpecification JSON override shared by both forms."""
     return FormField(
         "scope_spec",
-        "Scope specification (JSON, overrides scope + filters)",
+        "Scope specification (JSON, overrides the scope and security properties)",
         kind="area",
         placeholder='{"signature": {"scope": "SIGNATURE_SCOPE_STANDARD"}}',
         optional=True,
@@ -291,23 +367,36 @@ def _scope_spec_field() -> FormField:
     )
 
 
+def _requirement(key: str, label: str, help_text: str) -> FormField:
+    return FormField(key, label, kind="bool", optional=True, section=SECTION_REQUIREMENTS.key, help=help_text)
+
+
 def _provider_requirement_fields() -> tuple[FormField, ...]:
-    """ProviderRequirements toggles — CreateKey only (TransformKey has none)."""
+    """The ProviderRequirements a request can set; each one narrows the instances."""
     return (
-        FormField("require_fips_140", "Require FIPS 140 certified", kind="bool", group=GROUP_PROVIDER),
+        _requirement("require_fips_140", "FIPS 140 certified", "The module is FIPS 140-2 or 140-3 certified."),
         FormField(
             "min_fips_level",
-            "Min FIPS 140 level",
+            "Minimum FIPS 140 level",
             kind="dropdown",
             choices=_FIPS_LEVELS,
             optional=True,
-            group=GROUP_PROVIDER,
+            section=SECTION_REQUIREMENTS.key,
+            help="At least this FIPS 140 level; applies with FIPS 140 certified.",
         ),
-        FormField("require_memory_safe", "Require memory-safe", kind="bool", group=GROUP_PROVIDER),
-        FormField("require_constant_time", "Require constant-time", kind="bool", group=GROUP_PROVIDER),
-        FormField("require_side_channel_hardened", "Require side-channel hardened", kind="bool", group=GROUP_PROVIDER),
-        FormField("require_no_known_cve", "Require no known CVEs", kind="bool", group=GROUP_PROVIDER),
-        FormField("prefer_hardware_accelerated", "Prefer hardware acceleration", kind="bool", group=GROUP_PROVIDER),
+        _requirement(
+            "require_common_criteria", "Common Criteria certified", "The module is Common Criteria certified."
+        ),
+        _requirement("require_formally_verified", "Formally verified", "The implementation is formally verified."),
+        _requirement("require_memory_safe", "Memory-safe", "Written in a memory-safe language."),
+        _requirement("require_constant_time", "Constant-time", "Runs in constant time."),
+        _requirement("require_side_channel_hardened", "Side-channel hardened", "Hardened against side channels."),
+        _requirement("require_no_known_cve", "No known CVEs", "No known unpatched vulnerabilities."),
+        _requirement(
+            "prefer_hardware_accelerated",
+            "Prefer hardware acceleration",
+            "A preference, not a requirement: it reorders the instances that qualify.",
+        ),
     )
 
 
@@ -315,7 +404,7 @@ def _provider_requirements_field() -> FormField:
     """The advanced ProviderRequirements JSON override — CreateKey only."""
     return FormField(
         "provider_requirements",
-        "Provider requirements (JSON, overrides toggles)",
+        "Provider requirements (JSON, overrides the provider requirements above)",
         kind="area",
         placeholder='{"fips_140_certified": true, "min_fips_level": "FIPS_140_LEVEL_3"}',
         optional=True,
@@ -394,7 +483,15 @@ FORMS: tuple[RpcFormSpec, ...] = (
         (
             FormField("name", "Key name", placeholder="demo-signing-key"),
             FormField("policy", "Policy", placeholder="demo-signing-policy"),
-            FormField("template_id", "Template ID", placeholder="ecdsa-p256-sha256-der", optional=True),
+            # The scope, security properties and JSON override are shared with TransformKey.
+            _scope_field(),
+            FormField(
+                "template_id",
+                "Template ID",
+                placeholder="ecdsa-p256-sha256-der",
+                optional=True,
+                help="Names the exact template, which the policy must allow; blank lets the policy choose.",
+            ),
             FormField(
                 "provider_id",
                 "Provider instance",
@@ -403,10 +500,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 choices_from=PROVIDER_INSTANCES,
                 help="Pins the key to this instance; blank lets the server choose.",
             ),
-            # Shared scope-selection surface (also used by TransformKey).
-            _scope_field(),
             *_security_property_fields(),
-            # Provider-requirement filters — CreateKey only.
+            # Provider requirements — CreateKey only (TransformKeyRequest has none).
             *_provider_requirement_fields(),
             # Advanced escape hatches: a full ScopeSpecification / ProviderRequirements JSON wins.
             _scope_spec_field(),
@@ -456,11 +551,18 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 {
                     "name": "demo-pinned-key",
                     "policy": "demo-signing-policy",
+                    "scope": "SIGNATURE_STANDARD",
                     "template_id": "ecdsa-p256-sha256-der",
                     "provider_id": "software",
                 },
             ),
         ),
+        when_unset={
+            SECTION_SECURITY.key: "None set: the first template in the policy's list that offers the scope, "
+            "unless a template is named.",
+            SECTION_REQUIREMENTS.key: "None set: the first instance that implements the template, "
+            "within the policy's own provider requirements.",
+        },
     ),
     RpcFormSpec(
         "KeyManagementService",
@@ -490,6 +592,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
         "Transform",
         (
             FormField("name", "Key name", placeholder="demo-signing-key"),
+            # The key's scope: a transform may change the algorithm, never the scope.
+            _scope_field(),
             FormField(
                 "template_id",
                 "Template ID",
@@ -507,11 +611,8 @@ FORMS: tuple[RpcFormSpec, ...] = (
                     "(e.g. ECDSA P-256, RSA-2048, AES-256)."
                 ),
             ),
-            # Same scope-selection surface as CreateKey (shared builders): the
-            # TransformKeyRequest proto carries the identical ScopeSpecification.
-            # TransformKey has no provider_requirements arm, so those toggles are
-            # intentionally omitted here.
-            _scope_field(),
+            # The same ScopeSpecification surface as CreateKey (shared builders).
+            # TransformKeyRequest has no provider requirements.
             *_security_property_fields(),
             _scope_spec_field(),
         ),
@@ -522,9 +623,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
             Example(
                 "Rotate: new key material, same template",
-                {"name": "demo-pinned-key", "template_id": "ecdsa-p256-sha256-der"},
+                {"name": "demo-pinned-key", "scope": "SIGNATURE_STANDARD", "template_id": "ecdsa-p256-sha256-der"},
             ),
         ),
+        when_unset={
+            SECTION_SECURITY.key: "None set: the first template in the key's policy that offers the scope, "
+            "unless a template is named.",
+        },
     ),
     RpcFormSpec(
         "KeyManagementService",
@@ -856,10 +961,13 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "scope",
                 "Scope",
                 kind="dropdown",
-                choices=_KEY_SCOPES,
+                choices=_SCOPE_CHOICES,
                 optional=True,
                 choices_from=SCOPES,
-                help="Keeps the templates that offer this scope: the same match CreateKey applies.",
+                help=(
+                    "Keeps the templates that offer this scope: the same match CreateKey applies. "
+                    "Security properties need a scope."
+                ),
             ),
             FormField(
                 "allowed_statuses",
@@ -881,6 +989,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 {"scope": "AEAD_STANDARD", "allowed_statuses": "ACTIVE", "fips_approved": "true"},
             ),
         ),
+        when_unset={SECTION_SECURITY.key: "None set: every template of the scope."},
     ),
     RpcFormSpec(
         "AlgorithmDiscoveryService",
@@ -927,6 +1036,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             ),
         ),
         subject="template_id",
+        when_unset={SECTION_REQUIREMENTS.key: "None set: every instance that implements the template, best first."},
     ),
     RpcFormSpec(
         "ProviderService",
@@ -943,6 +1053,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             Example("Memory-safe instances", {"require_memory_safe": True}),
             Example("FIPS 140 instances", {"require_fips_140": True}),
         ),
+        when_unset={SECTION_REQUIREMENTS.key: "None set: every instance."},
     ),
     RpcFormSpec(
         "ProviderService",
@@ -970,6 +1081,7 @@ FORMS: tuple[RpcFormSpec, ...] = (
             Example("Providers that implement ML-DSA-65", {"template_id": "ml-dsa-65"}),
         ),
         subject="template_id",
+        when_unset={SECTION_REQUIREMENTS.key: "None set: every provider."},
     ),
     RpcFormSpec(
         "ProviderService",

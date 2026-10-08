@@ -174,33 +174,32 @@ def test_policy_form_examples_are_valid_server_rules_json() -> None:
             assert document["allowed_templates"]
 
 
-def test_key_scope_spec_infers_from_template() -> None:
-    from citius_ui.workbench.actions import _key_scope_spec
-
-    assert _key_scope_spec({"template_id": "ecdsa-p256-sha256-der"}).WhichOneof("scope_spec") == "signature"
-    assert _key_scope_spec({"template_id": "aes-256-gcm-128-96"}).WhichOneof("scope_spec") == "aead"
-    assert _key_scope_spec({"template_id": "chacha20-poly1305"}).WhichOneof("scope_spec") == "aead"
-    prehashed = _key_scope_spec({"template_id": "ecdsa-p256-prehashed-der"})
-    assert prehashed.signature.scope == 3  # SIGNATURE_SCOPE_PREHASHED
-
-
-def test_key_scope_spec_explicit_scope_wins() -> None:
-    from citius_ui.workbench.actions import _key_scope_spec
-
-    spec = _key_scope_spec({"template_id": "aes-256-gcm-128-96", "scope": "signature"})
-    assert spec.WhichOneof("scope_spec") == "signature"
-
-
-def test_key_scope_spec_requires_scope_when_uninferable() -> None:
+def test_key_scope_spec_requires_a_scope_even_with_a_template() -> None:
     from citius_ui.grpc_client.serialization import RequestError
     from citius_ui.workbench.actions import _key_scope_spec
 
-    with pytest.raises(RequestError, match="'scope' is required"):
-        _key_scope_spec({})
-    with pytest.raises(RequestError, match="cannot infer"):
-        _key_scope_spec({"template_id": "hkdf-sha256"})
-    with pytest.raises(RequestError, match="unsupported scope"):
-        _key_scope_spec({"scope": "teleport"})
+    # ml-dsa-65 serves more than one scope, so the template cannot stand in for it.
+    for request in ({}, {"template_id": "ml-dsa-65"}, {"template_id": "aes-256-gcm-128-96"}):
+        with pytest.raises(RequestError, match="'scope' is required: a template can serve more than one scope"):
+            _key_scope_spec(request)
+
+
+def test_key_scope_spec_sends_the_scope_given_whatever_the_template() -> None:
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    spec = _key_scope_spec({"template_id": "ml-dsa-65", "scope": "SIGNATURE_WITH_CONTEXT"})
+    assert spec.WhichOneof("scope_spec") == "signature"
+    assert spec.signature.scope == 2  # SIGNATURE_SCOPE_WITH_CONTEXT
+
+
+def test_key_scope_spec_takes_only_sdk_scope_names() -> None:
+    from citius_ui.grpc_client.serialization import RequestError
+    from citius_ui.workbench.actions import _key_scope_spec
+
+    assert _key_scope_spec({"scope": "aead_standard"}).WhichOneof("scope_spec") == "aead"
+    for name in ("teleport", "signature", "aead"):
+        with pytest.raises(RequestError, match="unsupported scope"):
+            _key_scope_spec({"scope": name})
 
 
 def _sign_request_proto() -> object:
@@ -270,8 +269,8 @@ def test_key_scope_spec_accepts_full_scope_spec_json() -> None:
 
     spec = _key_scope_spec({"scope_spec": '{"aead": {"scope": "AEAD_SCOPE_STANDARD"}}'})
     assert spec.WhichOneof("scope_spec") == "aead"
-    # The explicit spec overrides both the shorthand and template inference.
-    spec = _key_scope_spec({"scope_spec": {"signature": {}}, "scope": "aead", "template_id": "aes-256-gcm-128-96"})
+    # The explicit spec overrides the scope name.
+    spec = _key_scope_spec({"scope_spec": {"signature": {}}, "scope": "AEAD_STANDARD"})
     assert spec.WhichOneof("scope_spec") == "signature"
     with pytest.raises(RequestError, match="must set one scope arm"):
         _key_scope_spec({"scope_spec": "{}"})
@@ -317,10 +316,11 @@ def test_provider_requirements_from_toggles() -> None:
 
     reqs = _provider_requirements({"require_fips_140": True, "min_fips_level": "LEVEL_3", "require_memory_safe": True})
     assert reqs is not None
-    proto = reqs.to_proto()
-    assert proto.fips_140_certified is True
-    assert proto.memory_safe is True
-    assert proto.min_fips_level == 3  # FIPS_140_LEVEL_3
+    assert reqs.fips_140_certified is True
+    assert reqs.memory_safe is True
+    assert reqs.min_fips_level == 3  # FIPS_140_LEVEL_3
+    # Only what the form sets is in the message: no explicit falses.
+    assert {field.name for field, _ in reqs.ListFields()} == {"fips_140_certified", "memory_safe", "min_fips_level"}
 
 
 def test_provider_requirements_none_when_no_toggles() -> None:
@@ -334,8 +334,7 @@ def test_provider_requirements_json_override_wins() -> None:
 
     reqs = _provider_requirements({"require_fips_140": False, "provider_requirements": {"constant_time": True}})
     assert reqs is not None
-    proto = reqs.to_proto()
-    assert proto.constant_time is True
+    assert reqs.constant_time is True
 
 
 def test_encryption_params_from_friendly_aad() -> None:

@@ -12,6 +12,11 @@ funnels through the shared ActionExecutor so results are redacted and
 recorded in the session's history. Services with no implemented RPCs render
 as a muted, still-expandable card listing their contract methods honestly as
 unavailable.
+
+Security properties and provider requirements render as property sections:
+each lists only the properties that are set, offers the rest to add, and says
+what the server does when none is set. A form that carries them also shows the
+request message it would send, built by the same code the action sends.
 """
 
 from __future__ import annotations
@@ -20,13 +25,15 @@ import atexit
 import json
 import shutil
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import gradio as gr
 from citius_sdk.errors import CitiusError
+from google.protobuf.json_format import MessageToDict
 
 from citius_ui.actions.executor import ActionExecutor, ExecutionContext
 from citius_ui.actions.model import Availability, RpcAction, RpcResult
@@ -42,9 +49,20 @@ from citius_ui.showcases.inventory import to_cyclonedx
 from citius_ui.showcases.model import ExpectedOutcome, Runbook, StepState
 from citius_ui.showcases.replay import StepResult, form_values, run_step
 from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
-from citius_ui.workbench.actions import build_registry, registry_overview
+from citius_ui.workbench.actions import REQUEST_BUILDERS, build_registry, registry_overview
 from citius_ui.workbench.catalogue import choices_for, load_choices
-from citius_ui.workbench.forms import FORMS, FORMS_BY_METHOD, FormField, RpcFormSpec, build_request
+from citius_ui.workbench.forms import (
+    FORMS,
+    FORMS_BY_METHOD,
+    Example,
+    FormField,
+    PropertySection,
+    RpcFormSpec,
+    blank_value,
+    build_request,
+    is_set,
+    value_when_added,
+)
 
 _AVAILABILITY_BADGE = {
     Availability.AVAILABLE: "Available",
@@ -339,6 +357,19 @@ CSS = """
     font-size: .8rem !important; font-weight: 400 !important; padding: 4px 0 !important; box-shadow: none !important; }
 .pending-methods .prose, .pending-methods li { color: var(--citius-ink-soft) !important; font-size: .8rem !important; }
 
+/* A property section: a titled box that lists only the properties set, says
+   what the server does when none is, and offers the rest to add. gr.Column
+   carries no "block" class, so the strip rule above leaves its frame. */
+.svc-card .prop-section { border: 1px dashed var(--citius-border-idle) !important; border-radius: 10px !important;
+    background: var(--citius-surface) !important; padding: 8px 10px !important; gap: 4px !important; }
+.svc-card .prop-title p { margin: 0 !important; color: var(--citius-ink) !important; }
+.svc-card .prop-title code { font-size: .78rem !important; color: var(--citius-ink-soft) !important;
+    background: transparent !important; padding: 0 !important; }
+.svc-card .prop-note p { margin: 0 !important; font-size: .82rem !important; font-style: italic !important;
+    color: var(--citius-ink-soft) !important; }
+.svc-card .prop-row { align-items: center !important; gap: 6px !important; }
+.svc-card .prop-remove { max-width: 36px !important; }
+
 footer { visibility: hidden; }
 """
 
@@ -439,11 +470,12 @@ def _step_outcome(result: StepResult) -> str:
     return "  \n".join(lines)
 
 
-def _render_input(spec: FormField) -> gr.components.Component:
+def _render_input(spec: FormField, *, in_section: bool = False) -> gr.components.Component:
     # Only append "(optional)" when the label does not already convey it, and
-    # never for checkboxes (an unchecked box already reads as "not set").
+    # never for checkboxes (an unchecked box already reads as "not set") or for
+    # a section property (every one is optional, and is shown once it is set).
     label = spec.label
-    if spec.optional and spec.kind != "bool" and "optional" not in spec.label.lower():
+    if spec.optional and not in_section and spec.kind != "bool" and "optional" not in spec.label.lower():
         label = f"{spec.label} (optional)"
     info = spec.help or None
     if spec.kind == "area":
@@ -452,31 +484,148 @@ def _render_input(spec: FormField) -> gr.components.Component:
         return gr.Number(label=label, info=info)
     if spec.kind == "bool":
         return gr.Checkbox(label=label, info=info)
+    if spec.kind == "radio":
+        return gr.Radio(label=label, choices=list(spec.choices), value=None, info=info)
     if spec.kind == "dropdown":
         value = spec.choices[0] if (spec.choices and not spec.optional) else None
         return gr.Dropdown(label=label, choices=list(spec.choices), value=value, allow_custom_value=True, info=info)
     return gr.Textbox(label=label, placeholder=spec.placeholder, info=info)
 
 
-def _example_loader(spec: RpcFormSpec) -> Callable[[int], list[Any]]:
-    """Fill the form from the chosen example row.
+@dataclass(frozen=True)
+class _SectionView:
+    """A property section as rendered; ``shown`` holds the keys of the properties on show.
+
+    A property is on show once it is set, or once it is added and not yet
+    given a value, which is why the keys are kept rather than read from the
+    values.
+    """
+
+    fields: tuple[FormField, ...]
+    shown: gr.State
+    adder: gr.Dropdown
+    note: gr.Markdown
+    rows: tuple[gr.Row, ...]
+
+    def outputs(self) -> list[Any]:
+        return [self.shown, self.adder, self.note, *self.rows]
+
+    def show(self, keys: Iterable[str]) -> list[Any]:
+        """Updates for :meth:`outputs` that show the properties ``keys`` and offer the rest."""
+        wanted = set(keys)
+        shown = [field.key for field in self.fields if field.key in wanted]
+        rest = [(field.label, field.key) for field in self.fields if field.key not in wanted]
+        return [
+            shown,
+            gr.update(choices=rest, value=None, visible=bool(rest)),
+            gr.update(visible=not shown),
+            *(gr.update(visible=field.key in wanted) for field in self.fields),
+        ]
+
+    def show_set(self, values: Mapping[str, object]) -> list[Any]:
+        """Updates for :meth:`outputs` that show exactly the properties ``values`` sets."""
+        return self.show(field.key for field in self.fields if is_set(field, values.get(field.key)))
+
+
+@dataclass(frozen=True)
+class _FormLayout:
+    """A form's property sections, so whatever fills the form can show what it set."""
+
+    spec: RpcFormSpec
+    sections: tuple[_SectionView, ...] = ()
+
+    def outputs(self) -> list[Any]:
+        return [output for section in self.sections for output in section.outputs()]
+
+    def updates(self, values: Sequence[object]) -> list[Any]:
+        """Updates for :meth:`outputs` once the form holds ``values`` (in field order)."""
+        by_key = dict(zip((field.key for field in self.spec.fields), values, strict=True))
+        return [update for section in self.sections for update in section.show_set(by_key)]
+
+    def unchanged(self) -> list[Any]:
+        return [gr.update() for _ in self.outputs()]
+
+
+def _render_section(
+    spec: RpcFormSpec,
+    section: PropertySection,
+    fields: tuple[FormField, ...],
+    components: dict[str, gr.components.Component],
+) -> _SectionView:
+    """One property section: its title, what none set means, a hidden row per property, and an adder.
+
+    Adding a property shows its row (a requirement ticked, a yes/no property
+    true); its ✕ clears it and hides the row again.
+    """
+    with gr.Column(min_width=300, elem_classes=["prop-section"]):
+        gr.Markdown(f"**{section.title}**  \n`{section.message}`", elem_classes=["prop-title"])
+        note = gr.Markdown(spec.when_unset.get(section.key, ""), elem_classes=["prop-note"])
+        rows: list[gr.Row] = []
+        removes: list[gr.Button] = []
+        for field in fields:
+            with gr.Row(visible=False, equal_height=True, elem_classes=["prop-row"]) as row:
+                components[field.key] = _render_input(field, in_section=True)
+                removes.append(gr.Button("✕", size="sm", scale=0, min_width=36, elem_classes=["prop-remove"]))
+            rows.append(row)
+        adder = gr.Dropdown(
+            choices=[(field.label, field.key) for field in fields],
+            value=None,
+            label="Add a property",
+            elem_classes=["prop-adder"],
+        )
+        shown = gr.State([])
+    view = _SectionView(fields, shown, adder, note, tuple(rows))
+    targets = [*view.outputs(), *(components[field.key] for field in fields)]
+
+    def add(key: str | None, keys: list[str] | None) -> list[Any]:
+        values = [gr.update(value=value_when_added(f)) if f.key == key else gr.update() for f in fields]
+        return [*view.show([*(keys or []), *([key] if key else [])]), *values]
+
+    adder.input(add, inputs=[adder, shown], outputs=targets, show_progress="hidden")
+    for field, remove in zip(fields, removes, strict=True):
+
+        def drop(keys: list[str] | None, key: str = field.key) -> list[Any]:
+            values = [gr.update(value=blank_value(f)) if f.key == key else gr.update() for f in fields]
+            return [*view.show(k for k in (keys or []) if k != key), *values]
+
+        remove.click(drop, inputs=shown, outputs=targets, show_progress="hidden")
+    return view
+
+
+def _request_preview(spec: RpcFormSpec, builder: Callable[[dict[str, Any]], Any]) -> Callable[..., str]:
+    """The request message the form would send, as JSON, or why it cannot be sent yet."""
+
+    def show(*values: object) -> str:
+        try:
+            message = builder(build_request(spec, list(values)))
+        except (ValueError, CitiusError) as exc:
+            return f"// Not ready to send: {exc}"
+        return json.dumps(MessageToDict(message, preserving_proto_field_name=True), indent=2)
+
+    return show
+
+
+def _example_loader(spec: RpcFormSpec, layout: _FormLayout | None = None) -> Callable[[int], Any]:
+    """Fill the form from the chosen example row, and show the properties it sets.
 
     On a form that takes a pasted bundle, an example that does not set the
     bundle leaves it as it is, so choosing one after pasting keeps the paste.
-    A form with one field gets the bare value: Gradio would put a returned
+    A form with one output gets the bare value: Gradio would put a returned
     list into that single field as it is.
     """
 
     def load(index: int) -> Any:
         example = spec.examples[index]
         values = spec.example_values(example)
+        filled: list[Any] = list(values)
         if spec.consumes:
             keys = [field.key for field in spec.fields]
-            values = [
+            filled = [
                 gr.update() if key == "bundle" and key not in example.values else value
                 for key, value in zip(keys, values, strict=True)
             ]
-        return values[0] if len(values) == 1 else values
+        outputs = [*filled, *(layout.updates(values) if layout else [])]
+        return outputs[0] if len(outputs) == 1 else outputs
 
     return load
 
@@ -499,9 +648,10 @@ def build_workbench(
     make_provider = token_provider_factory or sessions.token_provider
     # Dropdowns whose choices come from the server's catalogue, filled on page load.
     live_fields: list[tuple[FormField, gr.components.Component]] = []
-    # Per RPC, its form inputs in field order; per service, its card and method
-    # dropdown. Runbook steps prefill through these.
+    # Per RPC, its form inputs in field order, and its property sections; per
+    # service, its card and method dropdown. Runbook steps prefill through these.
     form_inputs: dict[tuple[str, str], list[gr.components.Component]] = {}
+    form_layouts: dict[tuple[str, str], _FormLayout] = {}
     service_cards: dict[str, tuple[gr.Accordion, gr.Dropdown]] = {}
 
     def _open_clients(session: Session) -> CitiusClients:
@@ -616,27 +766,55 @@ def build_workbench(
     def _render_rpc_body(spec: RpcFormSpec, *, visible: bool) -> gr.Column:
         """Render one method's fields, actions, and output, toggled by the method dropdown."""
         with gr.Column(visible=visible) as body:
-            # Core fields render up front; optional filter groups are collapsed
-            # into on-demand sections so the form is not overloaded. The flat
-            # ``inputs`` list stays in ``spec.fields`` order for build_request,
-            # examples, run/clear/fill wiring regardless of render order.
+            # Core fields render up front, then the property sections side by
+            # side, then the collapsed advanced sections. The flat ``inputs``
+            # list stays in ``spec.fields`` order for build_request, examples,
+            # run/clear/fill wiring regardless of render order.
             components: dict[str, gr.components.Component] = {}
+            sections: list[_SectionView] = []
             with gr.Column(elem_classes=["request-zone"]):
                 for field in spec.core_fields():
                     components[field.key] = _render_input(field)
+                if spec.sections():
+                    with gr.Row():
+                        for section, section_fields in spec.sections():
+                            sections.append(_render_section(spec, section, section_fields, components))
                 for group_name, group_fields in spec.grouped_fields():
-                    with gr.Accordion(group_name, open=False, elem_classes=["rpc-accordion", "filter-group"]):
+                    with gr.Accordion(group_name, open=False, elem_classes=["rpc-accordion"]):
                         group_inputs = [_render_input(field) for field in group_fields]
                         for field, component in zip(group_fields, group_inputs, strict=True):
                             components[field.key] = component
                         clear_group = gr.Button("Clear this section", variant="secondary", size="sm")
                         clear_group.click(
-                            lambda inputs=group_inputs: [None for _ in inputs],
+                            lambda fields=group_fields: [blank_value(field) for field in fields],
                             outputs=group_inputs,
                         )
             inputs = [components[field.key] for field in spec.fields]
+            layout = _FormLayout(spec, tuple(sections))
             form_inputs[(spec.service, spec.method)] = inputs
+            form_layouts[(spec.service, spec.method)] = layout
             live_fields.extend((field, components[field.key]) for field in spec.fields if field.choices_from)
+            # What a fresh form holds: what Clear puts back.
+            fresh = spec.example_values(Example("A fresh form"))
+
+            builder = REQUEST_BUILDERS.get((spec.service, spec.method))
+            if builder is not None:
+                preview = _request_preview(spec, builder)
+                preview_box = gr.Code(
+                    preview(*fresh),
+                    language="json",
+                    label=f"Request being sent · {spec.method}Request",
+                    interactive=False,
+                )
+                gr.on(
+                    # Every input kind has a change event; Component's type does not declare it.
+                    [cast(Any, component).change for component in inputs],
+                    preview,
+                    inputs=inputs,
+                    outputs=preview_box,
+                    show_progress="hidden",
+                    trigger_mode="always_last",
+                )
 
             with gr.Row():
                 run = gr.Button(spec.action_label, variant="primary")
@@ -690,7 +868,9 @@ def build_workbench(
                         label=None,
                         show_label=False,
                     )
-                examples_table.click(_example_loader(spec), inputs=examples_table, outputs=inputs)
+                examples_table.click(
+                    _example_loader(spec, layout), inputs=examples_table, outputs=[*inputs, *layout.outputs()]
+                )
 
             if spec.produces and history_select is not None:
                 outputs = [status_box, response_box, history_select, bundle_state, bundle_box]
@@ -699,8 +879,10 @@ def build_workbench(
             run.click(lambda: gr.update(visible=True), outputs=output_row)
             run.click(_run_form(spec), inputs=[*inputs], outputs=outputs)
 
-            clear_targets = [*inputs, status_box, response_box]
-            clear.click(lambda targets=clear_targets: [None for _ in targets], outputs=clear_targets)
+            clear.click(
+                lambda: [*fresh, *layout.updates(fresh), None, None],
+                outputs=[*inputs, *layout.outputs(), status_box, response_box],
+            )
 
             if spec.produces and history_select is not None:
                 clear_history.click(
@@ -796,6 +978,7 @@ def build_workbench(
             outputs.extend(service_cards[service])
         for rpc in rpcs:
             outputs.extend(form_inputs[rpc])
+            outputs.extend(form_layouts[rpc].outputs())
         goal_view = gr.Markdown(goal_card(runbook), elem_classes=["goal-card"])
         run_state = gr.State(value=None)
         # The controls and the last result sit above the diagram, which can be
@@ -824,13 +1007,17 @@ def build_workbench(
                     updates += [gr.update(), gr.update()]
             for rpc in rpcs:
                 spec = FORMS_BY_METHOD[rpc]
+                layout = form_layouts[rpc]
                 if rpc != (step.service, step.method):
                     updates += [gr.update() for _ in spec.fields]
+                    updates += layout.unchanged()
                     continue
-                for field, value in zip(spec.fields, form_values(step), strict=True):
-                    if value is None and field.kind == "bool":
-                        value = False
-                    updates.append(gr.update(value=value))
+                values = [
+                    False if value is None and field.kind == "bool" else value
+                    for field, value in zip(spec.fields, form_values(step), strict=True)
+                ]
+                updates += [gr.update(value=value) for value in values]
+                updates += layout.updates(values)
             return updates
 
         async def _run_runbook_step(label: str, state: dict[str, Any] | None, request: gr.Request) -> tuple[Any, ...]:

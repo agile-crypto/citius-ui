@@ -15,9 +15,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import citius_sdk as sdk
-from citius_api.messages.key_management_pb2 import MigrationStrategy
+from citius_api.messages.key_management_pb2 import CreateKeyRequest, MigrationStrategy, TransformKeyRequest
 from citius_api.messages.metadata_pb2 import OperationMetadata as OperationMetadataProto
 from citius_api.services.discovery_service_pb2 import ListTemplatesRequest
+from citius_api.services.provider_service_pb2 import (
+    ListProviderInstancesRequest,
+    ListProvidersRequest,
+    MatchProvidersRequest,
+)
 from citius_api.types import common_pb2 as common_types
 from citius_api.types import implementation_pb2 as common_impl
 from citius_api.types import templates_pb2 as templates_types
@@ -235,31 +240,10 @@ def _metadata_proto(value: Any) -> OperationMetadataProto:
     return parsed
 
 
-_SIGNATURE_TEMPLATE_PREFIXES = (
-    "ecdsa-",
-    "ed25519",
-    "ed448",
-    "ml-dsa-",
-    "slh-dsa-",
-    "hash-ml-dsa-",
-    "hash-slh-dsa-",
-    "rsa-",
-)
-_AEAD_TEMPLATE_MARKERS = ("gcm", "chacha20-poly1305")
-
-
-_LEGACY_SCOPE_ALIASES = {
-    "signature": "SIGNATURE_STANDARD",
-    "signature_prehashed": "SIGNATURE_PREHASHED",
-    "aead": "AEAD_STANDARD",
-}
-
-
 def _resolve_scope(scope: str) -> sdk.Scope:
-    """Map a scope string (SDK name or legacy shorthand) to an SDK Scope."""
-    name = _LEGACY_SCOPE_ALIASES.get(scope.strip().lower(), scope.strip().upper())
+    """Map an SDK Scope name (``SIGNATURE_STANDARD``) to the SDK Scope."""
     try:
-        return sdk.Scope[name]
+        return sdk.Scope[scope.strip().upper()]
     except KeyError as exc:
         supported = ", ".join(member.name for member in sdk.Scope)
         raise RequestError(f"unsupported scope {scope!r} (supported: {supported})") from exc
@@ -299,7 +283,8 @@ def _security_properties(request: dict[str, Any]) -> sdk.SecurityProperties | No
     status = _enum_member(sdk.NistStatus, request, "nist_status")
     quantum_safe = _tristate(request, "quantum_safe")
     fips_approved = _tristate(request, "fips_approved")
-    if all(v in (None, "", 0) for v in (strength, level, status, quantum_safe, fips_approved)):
+    # A false yes/no property is a filter too, so each is compared with None.
+    if not strength and level is None and status is None and quantum_safe is None and fips_approved is None:
         return None
     return sdk.SecurityProperties(
         security_strength_bits=int(strength) if strength else 0,
@@ -310,10 +295,25 @@ def _security_properties(request: dict[str, Any]) -> sdk.SecurityProperties | No
     )
 
 
-def _provider_requirements(request: dict[str, Any]) -> sdk.ProviderRequirements | None:
-    """Build ProviderRequirements from the friendly toggle fields, or None.
+# Form field -> the ProviderRequirements field it sets when ticked.
+_REQUIREMENT_FIELDS = {
+    "require_fips_140": "fips_140_certified",
+    "require_common_criteria": "common_criteria_certified",
+    "require_formally_verified": "formally_verified",
+    "require_memory_safe": "memory_safe",
+    "require_constant_time": "constant_time",
+    "require_side_channel_hardened": "side_channel_hardened",
+    "require_no_known_cve": "no_known_cve",
+    "prefer_hardware_accelerated": "prefer_hardware_accelerated",
+}
 
-    An explicit 'provider_requirements' JSON object wins over the toggles.
+
+def _provider_requirements(request: dict[str, Any]) -> common_impl.ProviderRequirements | None:
+    """The ProviderRequirements the form sets, or None if it sets none.
+
+    Only the requirements set are in the message: the server reads an
+    absent one as not required, so the request says no more than the form.
+    An explicit 'provider_requirements' JSON object wins over the fields.
     """
     override = request.get("provider_requirements")
     if override not in (None, ""):
@@ -325,27 +325,26 @@ def _provider_requirements(request: dict[str, Any]) -> sdk.ProviderRequirements 
         if not isinstance(override, dict):
             raise RequestError("'provider_requirements' must be a JSON object")
         try:
-            proto: Any = ParseDict(override, common_impl.ProviderRequirements(), ignore_unknown_fields=False)
+            parsed: common_impl.ProviderRequirements = ParseDict(
+                override, common_impl.ProviderRequirements(), ignore_unknown_fields=False
+            )
         except ParseError as exc:
             raise RequestError(f"'provider_requirements' does not match the schema: {exc}") from exc
-        return _ProtoProviderRequirements(proto)
+        return parsed
     min_fips = _enum_member(sdk.Fips140Level, request, "min_fips_level")
-    toggles = {
-        "fips_140_certified": bool(request.get("require_fips_140", False)),
-        "common_criteria_certified": bool(request.get("require_common_criteria", False)),
-        "memory_safe": bool(request.get("require_memory_safe", False)),
-        "constant_time": bool(request.get("require_constant_time", False)),
-        "side_channel_hardened": bool(request.get("require_side_channel_hardened", False)),
-        "no_known_cve": bool(request.get("require_no_known_cve", False)),
-        "prefer_hardware_accelerated": bool(request.get("prefer_hardware_accelerated", False)),
-    }
-    if min_fips is None and not any(toggles.values()):
+    required = [name for key, name in _REQUIREMENT_FIELDS.items() if bool(request.get(key))]
+    if min_fips is None and not required:
         return None
-    return sdk.ProviderRequirements(min_fips_level=min_fips or sdk.Fips140Level.UNSPECIFIED, **toggles)
+    built = common_impl.ProviderRequirements()
+    for name in required:
+        setattr(built, name, True)
+    if min_fips is not None:
+        built.min_fips_level = common_impl.Fips140Level.ValueType(int(min_fips))
+    return built
 
 
 class _ProtoProviderRequirements:
-    """Adapter that lets a raw ProviderRequirements proto flow through the SDK builder path."""
+    """Hands a built ProviderRequirements message to the SDK clients, which take requirements objects."""
 
     def __init__(self, proto: Any) -> None:
         self._proto = proto
@@ -354,14 +353,21 @@ class _ProtoProviderRequirements:
         return self._proto
 
 
-def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
-    """Resolve the key scope the server requires on Create/TransformKey.
+# Why a scope is always required, even with a template: one template can serve
+# more than one scope, so the template alone does not say what the key is for.
+_SCOPE_REQUIRED = (
+    "'scope' is required: a template can serve more than one scope (ml-dsa-65 serves "
+    "SIGNATURE_STANDARD and SIGNATURE_WITH_CONTEXT), so the scope is always given"
+)
 
-    The server rejects key creation without a scope specification even when a
-    template is given, and the template must match the scope. An explicit
-    'scope_spec' JSON object wins (full ScopeSpecification control), then an
-    explicit 'scope' name/shorthand combined with the friendly security
-    filters; otherwise the scope is inferred from the template id.
+
+def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
+    """The scope specification CreateKey and TransformKey require, template or not.
+
+    An explicit 'scope_spec' JSON object wins (full ScopeSpecification
+    control); otherwise the 'scope' name, with the security-property
+    filters, builds it. Without either the request is refused: the scope is
+    never guessed from the template.
     """
     spec_json = request.get("scope_spec")
     if spec_json not in (None, ""):
@@ -386,7 +392,7 @@ def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
         return spec
     scope_name = str(request.get("scope") or "").strip()
     if not scope_name:
-        scope_name = _infer_scope_from_template(request)
+        raise RequestError(_SCOPE_REQUIRED)
     try:
         built_spec: common_types.ScopeSpecification = sdk.build_scope_spec(
             _resolve_scope(scope_name), security=_security_properties(request)
@@ -394,21 +400,6 @@ def _key_scope_spec(request: dict[str, Any]) -> common_types.ScopeSpecification:
     except ValueError as exc:
         raise RequestError(str(exc)) from exc
     return built_spec
-
-
-def _infer_scope_from_template(request: dict[str, Any]) -> str:
-    """Infer an SDK scope name from a template id, matching legacy behaviour."""
-    template_id = str(request.get("template_id") or "").strip().lower()
-    if not template_id:
-        supported = ", ".join(member.name for member in sdk.Scope)
-        raise RequestError(f"'scope' is required when no template_id is given (supported: {supported})")
-    if "prehashed" in template_id:
-        return "SIGNATURE_PREHASHED"
-    if template_id.startswith(_SIGNATURE_TEMPLATE_PREFIXES):
-        return "SIGNATURE_STANDARD"
-    if any(marker in template_id for marker in _AEAD_TEMPLATE_MARKERS):
-        return "AEAD_STANDARD"
-    raise RequestError(f"cannot infer a key scope from template {template_id!r}; set 'scope' explicitly")
 
 
 # ── Crypto operation parameters / signature contexts ──────────────────────────
@@ -946,22 +937,126 @@ def _migration_summary(result: sdk_keys.MigrateKeyResult) -> dict[str, Any]:
     }
 
 
+# ── Request builders ──────────────────────────────────────────────────────────
+#
+# The RPCs whose forms carry the security-property and provider-requirement
+# sections build their request message here, without a server. The action
+# sends exactly this message, and the Workbench shows it as "the request
+# being sent" while the form is filled in, so the preview cannot drift from
+# what goes on the wire.
+
+
+def create_key_request(request: dict[str, Any]) -> CreateKeyRequest:
+    """The CreateKeyRequest for a form request: the scope always, a template only if named."""
+    built = CreateKeyRequest(
+        name=_require_text(request, "name"),
+        policy=str(request.get("policy") or "").strip(),
+        provider_id=str(request.get("provider_id") or "").strip(),
+    )
+    template_id = str(request.get("template_id") or "").strip()
+    if template_id:
+        built.template_id = template_id
+    built.scope_spec.CopyFrom(_key_scope_spec(request))
+    requirements = _provider_requirements(request)
+    if requirements is not None:
+        built.provider_requirements.CopyFrom(requirements)
+    return built
+
+
+def transform_key_request(request: dict[str, Any]) -> TransformKeyRequest:
+    """The TransformKeyRequest for a form request; retaining key bytes needs a named template."""
+    retain_key_bytes = bool(request.get("retain_key_bytes", False))
+    template_id = str(request.get("template_id") or "").strip()
+    if retain_key_bytes and not template_id:
+        # The server requires an explicit, material-compatible target
+        # template to retain key bytes; fail fast with the same meaning.
+        raise RequestError("'template_id' is required when 'retain_key_bytes' is set")
+    built = TransformKeyRequest(name=_require_text(request, "name"), retain_key_bytes=retain_key_bytes)
+    if template_id:
+        built.template_id = template_id
+    built.scope_spec.CopyFrom(_key_scope_spec(request))
+    return built
+
+
+def list_templates_request(request: dict[str, Any]) -> ListTemplatesRequest:
+    """The ListTemplatesRequest for a form request; security filters need a scope to sit in."""
+    built = ListTemplatesRequest(
+        allowed_statuses=_template_statuses(request),
+        page_size=_page_size(request),
+        page_token=str(request.get("page_token") or "").strip(),
+    )
+    standard = str(request.get("required_standard") or "").strip()
+    if standard:
+        built.required_standards.append(standard)
+    scope = str(request.get("scope") or "").strip()
+    security = _security_properties(request)
+    if security is not None and not scope:
+        # The API carries security filters inside the scope specification,
+        # so without a scope they would be silently dropped.
+        raise RequestError("security filters need a scope; pick one or clear the filters")
+    if scope:
+        try:
+            built.scope_spec.CopyFrom(sdk.build_scope_spec(_resolve_scope(scope), security=security))
+        except ValueError as exc:
+            raise RequestError(str(exc)) from exc
+    return built
+
+
+def _with_requirements(built: Any, request: dict[str, Any]) -> Any:
+    requirements = _provider_requirements(request)
+    if requirements is not None:
+        built.requirements.CopyFrom(requirements)
+    return built
+
+
+def list_providers_request(request: dict[str, Any]) -> ListProvidersRequest:
+    return _with_requirements(  # type: ignore[no-any-return]
+        ListProvidersRequest(
+            template_id=str(request.get("template_id") or "").strip(),
+            page_size=_page_size(request),
+            page_token=str(request.get("page_token") or "").strip(),
+        ),
+        request,
+    )
+
+
+def list_provider_instances_request(request: dict[str, Any]) -> ListProviderInstancesRequest:
+    return _with_requirements(  # type: ignore[no-any-return]
+        ListProviderInstancesRequest(
+            provider_id=str(request.get("provider_id") or "").strip(),
+            page_size=_page_size(request),
+            page_token=str(request.get("page_token") or "").strip(),
+        ),
+        request,
+    )
+
+
+def match_providers_request(request: dict[str, Any]) -> MatchProvidersRequest:
+    return _with_requirements(  # type: ignore[no-any-return]
+        MatchProvidersRequest(template_id=_require_text(request, "template_id")), request
+    )
+
+
+def _sent_requirements(built: Any) -> _ProtoProviderRequirements | None:
+    """A built request's requirements, in the form the SDK client takes, or None if it has none."""
+    return _ProtoProviderRequirements(built.requirements) if built.HasField("requirements") else None
+
+
+# (service, method) -> the builder of the request message the action sends.
+REQUEST_BUILDERS: dict[tuple[str, str], Callable[[dict[str, Any]], Any]] = {
+    ("KeyManagementService", "CreateKey"): create_key_request,
+    ("KeyManagementService", "TransformKey"): transform_key_request,
+    ("AlgorithmDiscoveryService", "ListTemplates"): list_templates_request,
+    ("ProviderService", "ListProviders"): list_providers_request,
+    ("ProviderService", "ListProviderInstances"): list_provider_instances_request,
+    ("ProviderService", "MatchProviders"): match_providers_request,
+}
+
+
 def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def create_key(request: dict[str, Any]) -> RpcResult:
+        built = create_key_request(request)
         try:
-            built = sdk_keys.create_key_request(
-                _require_text(request, "name"),
-                policy=request.get("policy", ""),
-                template_id=request.get("template_id") or "scope-spec-carrier",
-                provider_id=request.get("provider_id", ""),
-                provider_requirements=_provider_requirements(request),
-            )
-            if not request.get("template_id"):
-                built.ClearField("template_id")
-            # The server requires a scope even when a template is given; the
-            # scope spec carries the friendly security-property filters and is
-            # built through the SDK vocabulary (sdk.build_scope_spec).
-            built.scope_spec.CopyFrom(_key_scope_spec(request))
             result = await clients.key_management.create_key(built)
         except CitiusError as error:
             return error_result(error)
@@ -982,19 +1077,8 @@ def _register_keys(registry: ActionRegistry, clients: CitiusClients) -> None:
         return RpcResult(status=ResultStatus.OK, response=_full_response(result.proto))
 
     async def transform_key(request: dict[str, Any]) -> RpcResult:
-        retain_key_bytes = bool(request.get("retain_key_bytes", False))
-        template_id = str(request.get("template_id") or "").strip()
-        if retain_key_bytes and not template_id:
-            # The server requires an explicit, material-compatible target
-            # template to retain key bytes; fail fast with the same meaning.
-            raise RequestError("'template_id' is required when 'retain_key_bytes' is set")
+        built = transform_key_request(request)
         try:
-            built = sdk_keys.transform_key_request(
-                _require_text(request, "name"),
-                retain_key_bytes=retain_key_bytes,
-                template_id=template_id,
-            )
-            built.scope_spec.CopyFrom(_key_scope_spec(request))
             result = await clients.key_management.transform_key(built)
         except CitiusError as error:
             return error_result(error)
@@ -1240,25 +1324,7 @@ def _template_statuses(request: dict[str, Any]) -> list[Any]:
 
 def _register_discovery(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def list_templates(request: dict[str, Any]) -> RpcResult:
-        built = ListTemplatesRequest(
-            allowed_statuses=_template_statuses(request),
-            page_size=_page_size(request),
-            page_token=str(request.get("page_token") or "").strip(),
-        )
-        standard = str(request.get("required_standard") or "").strip()
-        if standard:
-            built.required_standards.append(standard)
-        scope = str(request.get("scope") or "").strip()
-        security = _security_properties(request)
-        if security is not None and not scope:
-            # The API carries security filters inside the scope specification,
-            # so without a scope they would be silently dropped.
-            raise RequestError("security filters need a scope; pick one or clear the filters")
-        if scope:
-            try:
-                built.scope_spec.CopyFrom(sdk.build_scope_spec(_resolve_scope(scope), security=security))
-            except ValueError as exc:
-                raise RequestError(str(exc)) from exc
+        built = list_templates_request(request)
         try:
             result = await clients.discovery.list_templates(built)
         except CitiusError as error:
@@ -1364,12 +1430,13 @@ def unmet_requirements(requirements: Any, props: Any) -> list[str]:
 
 def _register_providers(registry: ActionRegistry, clients: CitiusClients) -> None:
     async def list_instances(request: dict[str, Any]) -> RpcResult:
+        built = list_provider_instances_request(request)
         try:
             result = await clients.providers.list_provider_instances(
-                provider_id=str(request.get("provider_id") or "").strip(),
-                requirements=_provider_requirements(request),
-                page_size=_page_size(request),
-                page_token=str(request.get("page_token") or "").strip(),
+                provider_id=built.provider_id,
+                requirements=_sent_requirements(built),
+                page_size=built.page_size,
+                page_token=built.page_token,
             )
         except CitiusError as error:
             return error_result(error)
@@ -1407,12 +1474,13 @@ def _register_providers(registry: ActionRegistry, clients: CitiusClients) -> Non
         )
 
     async def list_providers(request: dict[str, Any]) -> RpcResult:
+        built = list_providers_request(request)
         try:
             result = await clients.providers.list_providers(
-                template_id=str(request.get("template_id") or "").strip(),
-                requirements=_provider_requirements(request),
-                page_size=_page_size(request),
-                page_token=str(request.get("page_token") or "").strip(),
+                template_id=built.template_id,
+                requirements=_sent_requirements(built),
+                page_size=built.page_size,
+                page_token=built.page_token,
             )
         except CitiusError as error:
             return error_result(error)
@@ -1448,16 +1516,16 @@ def _register_providers(registry: ActionRegistry, clients: CitiusClients) -> Non
         UI's hint (see :func:`unmet_requirements`), and are left out, not
         failed on, when the instances cannot be listed.
         """
-        requirements = _provider_requirements(request)
-        template_id = _require_text(request, "template_id")
+        built = match_providers_request(request)
+        template_id = built.template_id
         try:
             matches = await clients.providers.match_providers(
                 template_id=template_id,
-                requirements=requirements,
+                requirements=_sent_requirements(built),
             )
         except CitiusError as error:
             return error_result(error)
-        required = requirements.to_proto() if requirements is not None else common_impl.ProviderRequirements()
+        required = built.requirements
         ranked = [
             {
                 "rank": n,

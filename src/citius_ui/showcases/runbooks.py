@@ -160,7 +160,7 @@ def _create_key(
     )
 
 
-def _transform(key: str, template: str, explanation: str, **look_for: object) -> RunbookStep:
+def _transform(key: str, scope: str, template: str, explanation: str, **look_for: object) -> RunbookStep:
     return RunbookStep(
         persona="CISO",
         title=f"Transform {key} to {template}",
@@ -168,7 +168,7 @@ def _transform(key: str, template: str, explanation: str, **look_for: object) ->
         method="TransformKey",
         expected=OK,
         explanation=explanation,
-        request={"name": key, "template_id": template},
+        request={"name": key, "scope": scope, "template_id": template},
         look_for={"key_metadata.template_id": template, **look_for},
     )
 
@@ -327,7 +327,13 @@ _R2_TEMPLATE = "aes-256-gcm-128-96"
 def _r2_key(suffix: str, provider: str, title: str, explanation: str, **fields: object) -> RunbookStep:
     return _create_key(
         title,
-        {"name": f"demo-r2-{suffix}", "policy": _R2_POLICY, "template_id": _R2_TEMPLATE, **fields},
+        {
+            "name": f"demo-r2-{suffix}",
+            "policy": _R2_POLICY,
+            "scope": "AEAD_STANDARD",
+            "template_id": _R2_TEMPLATE,
+            **fields,
+        },
         explanation,
         provider=provider,
     )
@@ -388,6 +394,7 @@ R2_PROVIDERS = Runbook(
             request={
                 "name": "demo-r2-conflict",
                 "policy": _R2_POLICY,
+                "scope": "AEAD_STANDARD",
                 "template_id": _R2_TEMPLATE,
                 "provider_id": "openssl",
                 "require_memory_safe": True,
@@ -451,7 +458,7 @@ R3_POLICY = Runbook(
             method="TransformKey",
             expected=ExpectedOutcome.POLICY_REJECTED,
             explanation="ML-DSA-65 is not in the policy's allowed templates.",
-            request={"name": _R3_KEY, "template_id": "ml-dsa-65"},
+            request={"name": _R3_KEY, "scope": "SIGNATURE_STANDARD", "template_id": "ml-dsa-65"},
             hint="A transform places a new version, which must use an allowed template.",
         ),
         _update_policy(
@@ -460,7 +467,7 @@ R3_POLICY = Runbook(
             "Allow ML-DSA-65 as well.",
             "Allow the target template",
         ),
-        _transform(_R3_KEY, "ml-dsa-65", "The same request now succeeds."),
+        _transform(_R3_KEY, "SIGNATURE_STANDARD", "ml-dsa-65", "The same request now succeeds."),
     ),
     goal=Goal(
         claim="The policy is enforced on every call",
@@ -497,13 +504,19 @@ R4_AGILITY = Runbook(
         ),
         _create_key(
             "Create an ECDSA signing key",
-            {"name": _R4_KEY, "policy": _R4_POLICY, "template_id": "ecdsa-p256-sha256-der"},
+            {
+                "name": _R4_KEY,
+                "policy": _R4_POLICY,
+                "scope": "SIGNATURE_STANDARD",
+                "template_id": "ecdsa-p256-sha256-der",
+            },
             "Version 1.",
             template="ecdsa-p256-sha256-der",
         ),
         _sign(_R4_KEY, "r4-ecdsa", "Keep the bundle: it records key_version 1."),
         _transform(
             _R4_KEY,
+            "SIGNATURE_STANDARD",
             "ml-dsa-65",
             "Version 2 is a new ML-DSA key; version 1 stays for verification.",
             **{"key_metadata.version": 2},
@@ -514,7 +527,12 @@ R4_AGILITY = Runbook(
         _timeline(_R4_KEY, "v1 ECDSA, v2 ML-DSA-65, same provider."),
         _create_key(
             "Create an RSA-PSS key",
-            {"name": "demo-r4-rsa", "policy": _R4_POLICY, "template_id": "rsa-pss-sha256-mgf1-32-2048"},
+            {
+                "name": "demo-r4-rsa",
+                "policy": _R4_POLICY,
+                "scope": "SIGNATURE_STANDARD",
+                "template_id": "rsa-pss-sha256-mgf1-32-2048",
+            },
             "Variant: change only the padding, keeping the key pair.",
             template="rsa-pss-sha256-mgf1-32-2048",
         ),
@@ -525,7 +543,12 @@ R4_AGILITY = Runbook(
             method="TransformKey",
             expected=OK,
             explanation="The same RSA key pair under a different padding scheme.",
-            request={"name": "demo-r4-rsa", "template_id": "rsa-pkcs1v15-sha256-2048", "retain_key_bytes": True},
+            request={
+                "name": "demo-r4-rsa",
+                "scope": "SIGNATURE_STANDARD",
+                "template_id": "rsa-pkcs1v15-sha256-2048",
+                "retain_key_bytes": True,
+            },
             look_for={"key_metadata.template_id": "rsa-pkcs1v15-sha256-2048"},
         ),
     ),
@@ -566,6 +589,7 @@ R5_PORTABILITY = Runbook(
             {
                 "name": "demo-r5-data",
                 "policy": _R5_POLICY,
+                "scope": "AEAD_STANDARD",
                 "template_id": "aes-256-gcm-128-96",
                 "provider_id": "software",
             },
@@ -595,6 +619,7 @@ R5_PORTABILITY = Runbook(
             {
                 "name": "demo-r5-sign",
                 "policy": _R5_POLICY,
+                "scope": "SIGNATURE_STANDARD",
                 "template_id": "ecdsa-p256-sha256-der",
                 "provider_id": "software",
             },
@@ -645,7 +670,12 @@ R6_SCOPE = Runbook(
         ),
         _create_key(
             "Create a standard signature key",
-            {"name": "demo-r6-std", "policy": _R6_POLICY, "template_id": "ecdsa-p256-sha256-der"},
+            {
+                "name": "demo-r6-std",
+                "policy": _R6_POLICY,
+                "scope": "SIGNATURE_STANDARD",
+                "template_id": "ecdsa-p256-sha256-der",
+            },
             "Its callers pass whole messages.",
             template="ecdsa-p256-sha256-der",
         ),
@@ -723,7 +753,12 @@ R7_DUTIES = Runbook(
         ),
         _create_key(
             "Create the signing key",
-            {"name": "demo-r7-sign", "policy": "demo-r7-policy", "template_id": "ecdsa-p256-sha256-der"},
+            {
+                "name": "demo-r7-sign",
+                "policy": "demo-r7-policy",
+                "scope": "SIGNATURE_STANDARD",
+                "template_id": "ecdsa-p256-sha256-der",
+            },
             "In browser two, as the producer.",
         ),
         _sign("demo-r7-sign", "r7-sig", "Copy the bundle to browser three."),
@@ -810,7 +845,12 @@ R8_CAMPAIGN = Runbook(
         ),
         _create_key(
             "Create an RSA-PSS signature key",
-            {"name": "demo-r8-rsa", "policy": _R8_POLICY, "template_id": "rsa-pss-sha256-mgf1-32-2048"},
+            {
+                "name": "demo-r8-rsa",
+                "policy": _R8_POLICY,
+                "scope": "SIGNATURE_STANDARD",
+                "template_id": "rsa-pss-sha256-mgf1-32-2048",
+            },
             "A legacy system's choice.",
             template="rsa-pss-sha256-mgf1-32-2048",
         ),
@@ -850,12 +890,14 @@ R8_CAMPAIGN = Runbook(
         _r8_rekey("demo-r8-data"),
         _transform(
             "demo-r8-ecdsa",
+            "SIGNATURE_STANDARD",
             "ml-dsa-65",
             "The ECDSA key regenerates as ML-DSA inside the FIPS module.",
             **{"key_metadata.provider": "openssl-fips"},
         ),
         _transform(
             "demo-r8-rsa",
+            "SIGNATURE_STANDARD",
             "ml-dsa-65",
             "RSA material cannot become ML-DSA, so this key regenerates too.",
             **{"key_metadata.provider": "openssl-fips"},
@@ -984,8 +1026,10 @@ SHOWCASE_CHOOSE = Runbook(
         _choose_key(
             "demo-exact-key",
             "Or name the template exactly",
-            "Naming a template is still possible; the policy must allow it.",
+            "Naming a template is still possible; the policy must allow it. The scope is still "
+            "given: a template can serve more than one.",
             template="ml-dsa-65",
+            scope="SIGNATURE_STANDARD",
             template_id="ml-dsa-65",
         ),
         _choose_key(

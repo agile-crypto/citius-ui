@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from citius_ui.workbench.forms import FORMS_BY_METHOD, Example, FormValidationError, build_request
+from citius_ui.workbench.forms import FORMS_BY_METHOD, Example, FormField, FormValidationError, build_request
 
 
 def test_build_request_drops_empty_and_none() -> None:
@@ -113,42 +113,134 @@ def test_create_and_transform_key_share_the_scope_selection_fields() -> None:
     assert "provider_requirements" not in transform
 
 
-def test_create_key_groups_filters_into_intuitive_sections() -> None:
-    from citius_ui.workbench.forms import GROUP_ADVANCED, GROUP_PROVIDER, GROUP_UNIVERSAL
+def test_create_key_puts_properties_in_sections_and_json_overrides_in_advanced() -> None:
+    from citius_ui.workbench.forms import GROUP_ADVANCED, SECTION_REQUIREMENTS, SECTION_SECURITY
 
     spec = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
-    # Core fields stay ungrouped and up front.
-    core = {field.key for field in spec.core_fields()}
-    assert core == {"name", "policy", "template_id", "provider_id", "scope"}
+    # The key's identity, its required scope, and the optional pins stay up front.
+    assert [field.key for field in spec.core_fields()] == ["name", "policy", "scope", "template_id", "provider_id"]
+    sections = {section.key: {f.key for f in fields} for section, fields in spec.sections()}
+    assert sections == {
+        SECTION_SECURITY.key: {
+            "quantum_safe",
+            "security_strength_bits",
+            "nist_security_level",
+            "nist_status",
+            "fips_approved",
+        },
+        SECTION_REQUIREMENTS.key: {
+            "require_fips_140",
+            "min_fips_level",
+            "require_common_criteria",
+            "require_formally_verified",
+            "require_memory_safe",
+            "require_constant_time",
+            "require_side_channel_hardened",
+            "require_no_known_cve",
+            "prefer_hardware_accelerated",
+        },
+    }
     groups = dict(spec.grouped_fields())
-    assert {group for group, _ in spec.grouped_fields()} == {GROUP_UNIVERSAL, GROUP_PROVIDER, GROUP_ADVANCED}
-    assert {f.key for f in groups[GROUP_UNIVERSAL]} == {
-        "security_strength_bits",
-        "nist_security_level",
-        "nist_status",
-        "quantum_safe",
-        "fips_approved",
-    }
-    assert {f.key for f in groups[GROUP_PROVIDER]} == {
-        "require_fips_140",
-        "min_fips_level",
-        "require_memory_safe",
-        "require_constant_time",
-        "require_side_channel_hardened",
-        "require_no_known_cve",
-        "prefer_hardware_accelerated",
-    }
+    assert set(groups) == {GROUP_ADVANCED}
     assert {f.key for f in groups[GROUP_ADVANCED]} == {"scope_spec", "provider_requirements"}
 
 
-def test_grouped_fields_preserve_full_field_set_and_order() -> None:
-    # Every field is either core or grouped exactly once, and concatenating
-    # core + grouped covers all fields (order within each is preserved).
+def test_every_field_is_core_grouped_or_in_one_section_exactly_once() -> None:
     for spec in FORMS_BY_METHOD.values():
         grouped = [field for _, fields in spec.grouped_fields() for field in fields]
-        combined = {field.key for field in spec.core_fields()} | {field.key for field in grouped}
-        assert combined == {field.key for field in spec.fields}
-        assert len(spec.core_fields()) + len(grouped) == len(spec.fields)
+        sectioned = [field for _, fields in spec.sections() for field in fields]
+        parts = [*spec.core_fields(), *grouped, *sectioned]
+        assert sorted(f.key for f in parts) == sorted(f.key for f in spec.fields), spec.method
+        assert not any(field.group and field.section for field in spec.fields), spec.method
+
+
+def test_section_properties_are_optional_and_each_section_says_what_none_set_means() -> None:
+    for spec in FORMS_BY_METHOD.values():
+        keys = {section.key for section, _ in spec.sections()}
+        # Every section the form has explains its empty state, and only those.
+        assert set(spec.when_unset) == keys, spec.method
+        assert all(text.startswith("None set: ") for text in spec.when_unset.values()), spec.method
+        for _, fields in spec.sections():
+            for field in fields:
+                assert field.optional and field.help, (spec.method, field.key)
+                # A property is set or not; no choice stands for "unset".
+                assert "" not in field.choices, (spec.method, field.key)
+
+
+def test_the_property_sections_are_on_the_rpcs_that_carry_those_messages() -> None:
+    from citius_ui.workbench.forms import SECTION_REQUIREMENTS, SECTION_SECURITY
+
+    def has(service: str, method: str) -> set[str]:
+        return {section.key for section, _ in FORMS_BY_METHOD[(service, method)].sections()}
+
+    both = {SECTION_SECURITY.key, SECTION_REQUIREMENTS.key}
+    assert has("KeyManagementService", "CreateKey") == both
+    assert has("KeyManagementService", "TransformKey") == {SECTION_SECURITY.key}
+    assert has("AlgorithmDiscoveryService", "ListTemplates") == {SECTION_SECURITY.key}
+    for method in ("MatchProviders", "ListProviderInstances", "ListProviders"):
+        assert has("ProviderService", method) == {SECTION_REQUIREMENTS.key}, method
+
+
+def test_key_scope_is_required_and_not_preset() -> None:
+    for method in ("CreateKey", "TransformKey"):
+        scope = next(f for f in FORMS_BY_METHOD[("KeyManagementService", method)].fields if f.key == "scope")
+        assert not scope.optional, method
+        assert "infer" not in scope.label.lower() and "infer" not in scope.help.lower(), method
+        # A fresh form leaves the scope for the user to choose.
+        assert scope.choices[0] == ""
+        assert "SIGNATURE_WITH_CONTEXT" in scope.choices
+
+
+def test_is_set_and_value_when_added() -> None:
+    from citius_ui.workbench.forms import FormField, is_set, value_when_added
+
+    box = FormField("require_fips_140", "FIPS", kind="bool", optional=True)
+    yes_no = FormField("quantum_safe", "QS", kind="radio", choices=("true", "false"), optional=True)
+    number = FormField("security_strength_bits", "Bits", kind="number", optional=True)
+    level = FormField("nist_security_level", "Level", kind="dropdown", choices=("LEVEL_1",), optional=True)
+    assert (is_set(box, True), is_set(box, False), is_set(box, None)) == (True, False, False)
+    assert (is_set(yes_no, "false"), is_set(yes_no, None), is_set(yes_no, " ")) == (True, False, False)
+    assert (is_set(number, 0), is_set(number, None)) == (True, False)
+    # Adding a requirement ticks it and a yes/no property says yes; a range starts blank.
+    assert value_when_added(box) is True
+    assert value_when_added(yes_no) == "true"
+    assert value_when_added(number) is None
+    assert value_when_added(level) == ""
+
+
+def test_every_section_property_reaches_its_api_message() -> None:
+    # Each property field sets exactly the API field it stands for, so none is
+    # shown in the form and then lost on the way to the request.
+    from citius_ui.workbench.actions import _provider_requirements, _security_properties
+    from citius_ui.workbench.forms import SECTION_REQUIREMENTS, SECTION_SECURITY
+
+    def sample(field: FormField) -> object:
+        if field.kind == "bool":
+            return True
+        if field.kind == "number":
+            return 256
+        # The last choice: "false" for a yes/no property, so a lone false is sent too.
+        return field.choices[-1]
+
+    spec = FORMS_BY_METHOD[("KeyManagementService", "CreateKey")]
+    for section, fields in spec.sections():
+        for field in fields:
+            value = sample(field)
+            if section is SECTION_REQUIREMENTS:
+                built = _provider_requirements({field.key: value})
+                assert built is not None, field.key
+                assert built.ListFields(), field.key
+            else:
+                assert section is SECTION_SECURITY
+                assert _security_properties({field.key: value}) is not None, field.key
+
+
+def test_grouped_fields_keep_the_advanced_and_manual_sections() -> None:
+    from citius_ui.workbench.forms import GROUP_ADVANCED
+
+    for method in ("CreateKey", "TransformKey"):
+        groups = dict(FORMS_BY_METHOD[("KeyManagementService", method)].grouped_fields())
+        assert "scope_spec" in {f.key for f in groups[GROUP_ADVANCED]}
 
 
 def test_crypto_scope_params_are_grouped_as_advanced() -> None:
