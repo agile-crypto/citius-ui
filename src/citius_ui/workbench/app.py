@@ -302,6 +302,21 @@ CSS = """
 .workbench-grid label:has(> input[type="checkbox"]),
 .workbench-grid .checkbox-container { cursor: pointer !important; pointer-events: auto !important; }
 
+/* Radio buttons too: the generic input rule paints the checked dot in the
+   field background, so a choice looked unselected. Draw a real radio, and
+   mark the chosen option's pill so the choice reads at a glance. */
+.workbench-grid input[type="radio"] {
+    -webkit-appearance: radio !important; appearance: radio !important;
+    width: 16px !important; height: 16px !important; min-width: 16px !important;
+    accent-color: var(--citius-accent-purple) !important;
+    border: 1px solid var(--citius-border-idle) !important; border-radius: 50% !important;
+    cursor: pointer !important; opacity: 1 !important; margin: 0 6px 0 0 !important; }
+.workbench-grid label:has(> input[type="radio"]) {
+    cursor: pointer !important; border: 1px solid var(--citius-border-idle) !important; }
+.workbench-grid label:has(> input[type="radio"]:checked) {
+    border-color: var(--citius-accent-purple) !important; font-weight: 600 !important;
+    box-shadow: inset 0 0 0 1px var(--citius-accent-purple) !important; }
+
 
 /* The Response code block's syntax highlighting is a fixed dark theme
    (unrelated to the page's own light/dark toggle), so its token colors are
