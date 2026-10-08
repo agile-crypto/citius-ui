@@ -17,7 +17,6 @@ from citius_ui.showcases.diagram import FILL
 from citius_ui.showcases.model import StepState
 from citius_ui.showcases.runbooks import R4_AGILITY, R5_PORTABILITY, RUNBOOKS
 from citius_ui.workbench.app import build_workbench
-from citius_ui.workbench.shared_runs import SharedRuns
 
 
 def _prefill_handlers(tmp_path: Path) -> list[Any]:
@@ -58,14 +57,6 @@ class _FakeClients:
         _FakeClients.closed += 1
 
 
-class _Artifact:
-    def __init__(self, bundle: dict[str, Any]) -> None:
-        self._bundle = bundle
-
-    def bundle(self) -> dict[str, Any]:
-        return self._bundle
-
-
 def _ok_registry(_clients: Any) -> ActionRegistry:
     registry = ActionRegistry()
     for service, method in R4_AGILITY.required_actions():
@@ -94,18 +85,17 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     monkeypatch.setattr(app, "CitiusClients", _FakeClients)
     monkeypatch.setattr(app, "build_registry", _ok_registry)
     config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
-    sessions, history, shared = SessionStore(), MemoryHistoryStore(), SharedRuns()
+    sessions, history = SessionStore(), MemoryHistoryStore()
     session = sessions.create(subject="ciso", display_name="CISO")
-    blocks = build_workbench(config, sessions, history, shared_runs=shared)
+    blocks = build_workbench(config, sessions, history)
     run = _handler(blocks, "_run_runbook_step", "Create policy demo-r4-policy")
     request = SimpleNamespace(cookies={config.session_cookie_name: session.id})
     first = run.inputs[0].choices[0][0]
 
-    goal, diagram, outcome, seen, picker, box, shown = asyncio.run(run.fn(first, 0, request))
+    goal, diagram, outcome, state, picker, box, shown = asyncio.run(run.fn(first, None, request))
     assert f"rect {FILL[StepState.PASSED]}" in diagram and "Green: as expected" in diagram
     assert "**Step 1** (CISO, CreateCryptoPolicy): OK, as expected." in outcome
-    assert shared.results("r4-agility")[1].state is StepState.PASSED
-    assert seen == shared.version("r4-agility") > 0
+    assert state["results"][1].state is StepState.PASSED
     # The exact request and response are there for a closer look.
     assert box["label"] == "Response · step 1 (CreateCryptoPolicy, OK)"
     body = json.loads(shown)
@@ -119,82 +109,23 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     assert _FakeClients.closed >= 1
 
     # Step 2 expects a template in the response; an empty OK differs.
-    _, diagram, outcome, seen, picker, box, shown = asyncio.run(run.fn(picker["value"], seen, request))
+    _, diagram, outcome, state, picker, box, shown = asyncio.run(run.fn(picker["value"], state, request))
     assert f"rect {FILL[StepState.DIFFERS]}" in diagram and "a value differs" in outcome
     assert picker["value"].startswith("2.")  # it stays on the step that did not pass
     assert box["label"].startswith("Response · step 2")
 
     # Picking step 1 again shows its response; picking one not run leaves the view alone.
     show = _handler(blocks, "_show_response", "Create policy demo-r4-policy")
-    box, shown = show.fn(first, request)
+    box, shown = show.fn(first, state)
     assert box["label"].startswith("Response · step 1") and json.loads(shown)["request"]["name"] == "demo-r4-policy"
     not_run = run.inputs[0].choices[5][0]
-    assert show.fn(not_run, request) == ({"__type__": "update"}, {"__type__": "update"})
+    assert show.fn(not_run, state) == ({"__type__": "update"}, {"__type__": "update"})
 
     resets = [f for f in blocks.fns.values() if getattr(f.fn, "__name__", "") == "_reset_runbook"]
     assert len(resets) == len(RUNBOOKS)
-    r4_reset = next(f for f in resets if any("demo-r4" in str(o) for o in f.outputs[4].choices))
-    goal, diagram, outcome, seen, _, box, shown = r4_reset.fn()
-    assert outcome == "" and FILL[StepState.PASSED] not in diagram
-    assert shared.results("r4-agility") == {} and seen == shared.version("r4-agility")
+    goal, diagram, outcome, state, _, box, shown = resets[3].fn()
+    assert state is None and outcome == "" and FILL[StepState.PASSED] not in diagram
     assert (box["label"], shown) == ("Response", "")
-
-
-def test_another_browser_sees_the_step_and_gets_its_bundle(tmp_path: Path, monkeypatch: Any) -> None:
-    import citius_ui.workbench.app as app
-
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def registry(_clients: Any) -> ActionRegistry:
-        registry = ActionRegistry()
-        for service, method in R4_AGILITY.required_actions():
-
-            async def invoke(request: dict[str, Any], _method: str = method) -> RpcResult:
-                calls.append((_method, request))
-                return RpcResult(status=ResultStatus.OK, response={"valid": True, "secret": "only-for-the-signer"})
-
-            registry.register(
-                RpcAction(
-                    service=service,
-                    method=method,
-                    permission="",
-                    availability=Availability.AVAILABLE,
-                    invoke=invoke,
-                    extract_artifacts=lambda request, _result: [_Artifact({"key_name": request["key_name"]})],
-                )
-            )
-        return registry
-
-    monkeypatch.setattr(app, "CitiusClients", _FakeClients)
-    monkeypatch.setattr(app, "build_registry", registry)
-    config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
-    sessions, shared = SessionStore(), SharedRuns()
-    producer_id = sessions.create(subject="producer", display_name="Producer").id
-    consumer_id = sessions.create(subject="consumer", display_name="Consumer").id
-    producer = SimpleNamespace(cookies={config.session_cookie_name: producer_id})
-    consumer = SimpleNamespace(cookies={config.session_cookie_name: consumer_id})
-    blocks = build_workbench(config, sessions, MemoryHistoryStore(), shared_runs=shared)
-    run = _handler(blocks, "_run_runbook_step", "Create policy demo-r4-policy")
-    refresh = _handler(blocks, "_refresh", "Create policy demo-r4-policy")
-    show = _handler(blocks, "_show_response", "Create policy demo-r4-policy")
-    label = {value.split(".")[0]: value for value, _ in run.inputs[0].choices}
-
-    # The producer signs (step 3) in their browser.
-    asyncio.run(run.fn(label["3"], 0, producer))
-    # The consumer's browser, still at version 0, redraws with the producer's step...
-    goal, diagram, outcome, seen, picker = refresh.fn(label["1"], 0)
-    assert "**Step 3** (Producer, Sign)" in outcome and f"rect {FILL[StepState.PASSED]}" in diagram
-    assert seen == shared.version("r4-agility") and picker["value"] == label["1"]  # step 1 is next
-    # ...and nothing more until something changes.
-    assert refresh.fn(label["1"], seen)[3] == seen and refresh.fn(label["1"], seen)[0] == {"__type__": "update"}
-    # It sees how the step went, not the producer's full response.
-    _, note = show.fn(label["3"], consumer)
-    assert "only-for-the-signer" not in note and "Producer's browser" in note
-    assert "only-for-the-signer" in show.fn(label["3"], producer)[1]
-    # The consumer verifies (step 5) with the bundle the producer's browser kept.
-    asyncio.run(run.fn(label["5"], seen, consumer))
-    verify = next(request for method, request in calls if method == "Verify")
-    assert json.loads(verify["bundle"]) == {"key_name": "demo-r4-key"}
 
 
 def test_each_runbooks_text_sits_in_a_closed_details_section(tmp_path: Path) -> None:
@@ -214,5 +145,5 @@ def test_run_step_without_a_session_changes_nothing(tmp_path: Path) -> None:
     blocks = build_workbench(config, SessionStore(), MemoryHistoryStore())
     run = _handler(blocks, "_run_runbook_step", "Create policy demo-r4-policy")
     request = SimpleNamespace(cookies={})
-    _, _, outcome, seen, *_ = asyncio.run(run.fn(run.inputs[0].choices[0][0], 0, request))
-    assert "No active session" in outcome and seen == 0
+    _, _, outcome, state, *_ = asyncio.run(run.fn(run.inputs[0].choices[0][0], None, request))
+    assert "No active session" in outcome and state == {"results": {}, "bundles": {}}

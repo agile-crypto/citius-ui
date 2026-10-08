@@ -41,11 +41,10 @@ from citius_ui.showcases.inventory import render_markdown as render_inventory
 from citius_ui.showcases.inventory import to_cyclonedx
 from citius_ui.showcases.model import ExpectedOutcome, Runbook, StepState
 from citius_ui.showcases.replay import StepResult, form_values, run_step
-from citius_ui.showcases.runbooks import DEEP_DIVES, SHOWCASE, render_markdown
+from citius_ui.showcases.runbooks import RUNBOOKS, render_markdown
 from citius_ui.workbench.actions import build_registry, registry_overview
 from citius_ui.workbench.catalogue import choices_for, load_choices
 from citius_ui.workbench.forms import FORMS, FORMS_BY_METHOD, FormField, RpcFormSpec, build_request
-from citius_ui.workbench.shared_runs import SharedRuns
 
 _AVAILABILITY_BADGE = {
     Availability.AVAILABLE: "Available",
@@ -194,22 +193,15 @@ CSS = """
     font-weight: 600 !important; color: var(--citius-rpc-ink) !important; padding: 9px 13px !important; }
 .logout-button { max-width: 140px; align-self: flex-end; }
 
-/* A runbook's goal: the claim, before and after, and its proofs as a
-   checklist. A proof reads muted until its steps have gone as expected,
-   then in full ink with a green tick (the card renders it in bold). The
-   marks use a symbol font, so the tick is a tick in any UI font. Gradio
-   puts the class on both the block and its inner .prose, so the frame goes
-   on the block only. */
+/* A runbook's goal: the claim, before and after, and its proofs. A proof
+   reads muted until its steps have gone as expected, then in full ink (the
+   card renders it in bold). Gradio puts the class on both the block and
+   its inner .prose, so the frame goes on the block only. */
 .block.goal-card { border-left: 4px solid var(--citius-accent-teal) !important;
              background: var(--citius-surface-open) !important;
              padding: 10px 14px !important; border-radius: 0 8px 8px 0 !important; }
-.goal-card p { color: var(--citius-muted-ink) !important; }
-.goal-card p strong { color: var(--citius-ink) !important; }
-.goal-card .proof-mark { display: inline-block; width: 1.25em; font-weight: 700;
-    font-family: "DejaVu Sans", "Noto Sans Symbols 2", "Segoe UI Symbol", "Apple Symbols", sans-serif; }
-.goal-card .proof-mark.proven { color: #22c55e; }
-.goal-card .proof-mark.refused { color: #ef4444; }
-.goal-card .proof-mark.pending { color: var(--citius-muted-ink); }
+.goal-card li { color: var(--citius-muted-ink) !important; }
+.goal-card li strong { color: var(--citius-ink) !important; }
 /* Mermaid stretches a diagram to the full width, which makes a long runbook
    several screens tall; cap it so it scales down instead. */
 .runbook-diagram .mermaid svg { max-width: 860px !important; }
@@ -406,8 +398,6 @@ _VERDICT = {
 
 
 _NO_RESPONSE_LABEL = "Response"
-# How often an open runbook checks the shared run for other browsers' steps.
-_REFRESH_SECONDS = 1.0
 
 
 def _response_label(result: StepResult) -> str:
@@ -497,20 +487,16 @@ def build_workbench(
     history: MemoryHistoryStore,
     *,
     token_provider_factory: Callable[[str], Callable[[], Awaitable[str]]] | None = None,
-    shared_runs: SharedRuns | None = None,
 ) -> gr.Blocks:
     """Build the Gradio Workbench that executes actions for the current session.
 
     ``token_provider_factory`` maps a session id to the async token provider used
     for that session's RPCs. It defaults to the store's plain provider; the host
     injects a refreshing provider when OIDC refresh is configured.
-    ``shared_runs`` holds the runbooks' progress for every browser; each
-    Workbench gets its own unless one is given.
     """
 
     grouped = registry_overview()
     make_provider = token_provider_factory or sessions.token_provider
-    shared = shared_runs if shared_runs is not None else SharedRuns()
     # Dropdowns whose choices come from the server's catalogue, filled on page load.
     live_fields: list[tuple[FormField, gr.components.Component]] = []
     # Per RPC, its form inputs in field order; per service, its card and method
@@ -784,17 +770,14 @@ def build_workbench(
                         "\n".join(f"- `{method_name}` — {_AVAILABILITY_BADGE[avail]}" for method_name, avail in pending)
                     )
 
-    def _render_runbook(runbook: Runbook, tabs: gr.Tabs, section: gr.Accordion) -> None:
+    def _render_runbook(runbook: Runbook, tabs: gr.Tabs) -> None:
         """The runbook's goal card and sequence diagram, and a step picker to run or prefill.
 
         **Run step** sends the step's request through the same executor as
         the Workbench, so the call lands in the session's history, and colours
-        the step by its result. Results and bundles live in the shared run, so
-        every signed-in browser sees the same diagram and goal card, and a
-        step can paste a bundle another browser kept. While the runbook is
-        open, a browser checks the shared run every second and redraws when
-        it changed. Only runs from here count: calls made in the Workbench do
-        not change the diagram. **Reset** clears the runbook for everyone.
+        the step by its result. Results and bundles live in a ``gr.State``, so
+        each browser tab has its own, and only runs from here count: calls
+        made in the Workbench do not change the diagram. **Reset** clears them.
 
         **Prefill** switches to the Workbench tab, opens the step's service
         card, selects its method, and sets its form. Only RPCs with a form
@@ -814,8 +797,7 @@ def build_workbench(
         for rpc in rpcs:
             outputs.extend(form_inputs[rpc])
         goal_view = gr.Markdown(goal_card(runbook), elem_classes=["goal-card"])
-        # The shared run's version this browser shows.
-        seen = gr.State(value=0)
+        run_state = gr.State(value=None)
         # The controls and the last result sit above the diagram, which can be
         # taller than the screen.
         with gr.Row():
@@ -831,14 +813,6 @@ def build_workbench(
         ) as response_box:
             response_view = gr.Code(value="", language="json", interactive=False, show_label=False)
         diagram_view = gr.Markdown(_diagram(runbook, {}), elem_classes=["runbook-diagram"])
-        timer = gr.Timer(_REFRESH_SECONDS, active=False)
-
-        def _label_of(number: int | None, fallback: str) -> str:
-            return labels[numbers.index(number)] if number in numbers else fallback
-
-        def _subject(request: gr.Request) -> str | None:
-            session = sessions.get(request.cookies.get(config.session_cookie_name))
-            return session.subject if session is not None else None
 
         def _prefill(label: str) -> list[Any]:
             step = steps[labels.index(label)] if label in labels else steps[0]
@@ -859,20 +833,20 @@ def build_workbench(
                     updates.append(gr.update(value=value))
             return updates
 
-        async def _run_runbook_step(label: str, seen_version: int, request: gr.Request) -> tuple[Any, ...]:
+        async def _run_runbook_step(label: str, state: dict[str, Any] | None, request: gr.Request) -> tuple[Any, ...]:
+            state = state or {"results": {}, "bundles": {}}
             number = numbers[labels.index(label)] if label in labels else numbers[0]
             step = runbook.steps[number - 1]
             unchanged = (gr.update(), gr.update())
             kept = (gr.update(), gr.update())
             session = sessions.get(request.cookies.get(config.session_cookie_name))
             if session is None:
-                message = "**No active session.** Sign in again to run steps."
-                return (*unchanged, message, seen_version, gr.update(), *kept)
+                return (*unchanged, "**No active session.** Sign in again to run steps.", state, gr.update(), *kept)
             try:
                 clients = _open_clients(session)
             except Exception as exc:  # noqa: BLE001 - misconfigured endpoint/TLS must render, not crash
                 message = f"**UNAVAILABLE** · could not create a Citius client: {exc}"
-                return (*unchanged, message, seen_version, gr.update(), *kept)
+                return (*unchanged, message, state, gr.update(), *kept)
             executor = ActionExecutor(history)
             context = ExecutionContext(
                 session_id=session.history_id,
@@ -885,8 +859,7 @@ def build_workbench(
                 result, _ = await executor.execute(action, context, payload)
                 return result
 
-            before = shared.bundles()
-            bundles = dict(before)
+            bundles = dict(state["bundles"])
             try:
                 result = await run_step(number, step, build_registry(clients), bundles, invoke=invoke)
             finally:
@@ -894,35 +867,18 @@ def build_workbench(
                     await clients.close()
                 except Exception:  # noqa: BLE001 - closing must never mask the result
                     pass
-            new = {name: bundle for name, bundle in bundles.items() if before.get(name) != bundle}
-            version = shared.record(runbook.key, result, session.subject, new)
-            results = shared.results(runbook.key)
+            results = {**state["results"], number: result}
             upcoming = next_step(runbook, results)
             moved = result.state is StepState.PASSED and upcoming in numbers
-            chosen = _label_of(upcoming, label) if moved else label
+            chosen = labels[numbers.index(upcoming)] if moved and upcoming is not None else label
             return (
                 goal_card(runbook, results),
                 _diagram(runbook, results),
                 _step_outcome(result),
-                version,
+                {"results": results, "bundles": bundles},
                 gr.update(value=chosen),
                 gr.update(label=_response_label(result)),
                 _response_json(result),
-            )
-
-        def _refresh(label: str, seen_version: int) -> tuple[Any, ...]:
-            """Redraw from the shared run if it changed since this browser last drew it."""
-            version = shared.version(runbook.key)
-            if version == seen_version:
-                return (gr.update(), gr.update(), gr.update(), seen_version, gr.update())
-            results = shared.results(runbook.key)
-            last = shared.last(runbook.key)
-            return (
-                goal_card(runbook, results),
-                _diagram(runbook, results),
-                _step_outcome(last) if last is not None else "",
-                version,
-                gr.update(value=_label_of(next_step(runbook, results), label)),
             )
 
         def _reset_runbook() -> tuple[Any, ...]:
@@ -930,42 +886,26 @@ def build_workbench(
                 goal_card(runbook),
                 _diagram(runbook, {}),
                 "",
-                shared.reset(runbook.key),
+                None,
                 gr.update(value=labels[0]),
                 gr.update(label=_NO_RESPONSE_LABEL),
                 "",
             )
 
-        def _show_response(label: str, request: gr.Request) -> tuple[Any, Any]:
-            """Picking a step that has run shows its response; any other pick leaves the view as it is.
-
-            The full request and response are only for the identity that ran
-            the step; another browser sees the status and where to look.
-            """
+        def _show_response(label: str, state: dict[str, Any] | None) -> tuple[Any, Any]:
+            """Picking a step that has run shows its response; any other pick leaves the view as it is."""
             number = numbers[labels.index(label)] if label in labels else None
-            result = shared.results(runbook.key).get(number) if number is not None else None
+            result = (state or {}).get("results", {}).get(number)
             if result is None:
                 return gr.update(), gr.update()
-            if shared.ran_by(runbook.key, result.index) != _subject(request):
-                note = {
-                    "status": result.status or "not sent",
-                    "note": f"Run in the {result.step.persona}'s browser; the full response is shown there.",
-                }
-                return gr.update(label=_response_label(result)), json.dumps(note, indent=2)
             return gr.update(label=_response_label(result)), _response_json(result)
 
         prefill.click(_prefill, inputs=picker, outputs=outputs)
-        views = [goal_view, diagram_view, outcome, seen, picker, response_box, response_view]
-        run.click(_run_runbook_step, inputs=[picker, seen], outputs=views, show_progress_on=[outcome])
-        reset.click(_reset_runbook, outputs=views, show_progress="hidden")
+        views = [goal_view, diagram_view, outcome, run_state, picker, response_box, response_view]
+        run.click(_run_runbook_step, inputs=[picker, run_state], outputs=views)
+        reset.click(_reset_runbook, outputs=views)
         # .input fires only when a person picks, not when Run step moves the picker on.
-        picker.input(_show_response, inputs=picker, outputs=[response_box, response_view])
-        # Another browser's steps appear here while the runbook is open.
-        drawn = [goal_view, diagram_view, outcome, seen, picker]
-        timer.tick(_refresh, inputs=[picker, seen], outputs=drawn, show_progress="hidden")
-        section.expand(lambda: gr.Timer(active=True), outputs=timer)
-        section.expand(_refresh, inputs=[picker, seen], outputs=drawn, show_progress="hidden")
-        section.collapse(lambda: gr.Timer(active=False), outputs=timer)
+        picker.input(_show_response, inputs=[picker, run_state], outputs=[response_box, response_view])
 
     def _render_unavailable_card(service: str) -> None:
         """Render a muted, still-expandable card listing a service's contract RPCs.
@@ -1013,15 +953,6 @@ def build_workbench(
         def _resolver(service: str, method: str) -> Availability:
             return availability.get((service, method), Availability.UNKNOWN)
 
-        def _render_runbook_group(runbooks: tuple[Runbook, ...], tabs: gr.Tabs) -> None:
-            for runbook in runbooks:
-                with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]) as section:
-                    _render_runbook(runbook, tabs, section)
-                    # The summary and every step's explanation, hint and
-                    # what to look for: there when wanted, hidden otherwise.
-                    with gr.Accordion("Details", open=False, elem_classes=["rpc-accordion"]):
-                        gr.Markdown(render_markdown(runbook, _resolver))
-
         with gr.Tabs() as tabs:
             with gr.Tab("API Workbench", id=_WORKBENCH_TAB):
                 with gr.Column(elem_classes=["workbench-grid"]):
@@ -1052,21 +983,17 @@ def build_workbench(
                     gr.Markdown(
                         "Each runbook shows what it proves and, as a sequence diagram, who calls "
                         "what. Pick a step and **Run step** to run it here: the diagram colours it "
-                        "by the result, the goal card ticks each claim with the values that show it, "
-                        "and bundles pass to later steps. **Prefill** loads the step into the "
-                        "Workbench instead. A step for another identity runs in that identity's "
-                        "browser: every signed-in browser sees the same run, and only safe bundles "
-                        "cross browsers, never tokens."
+                        "by the result, and bundles pass to later steps. **Prefill** loads the step "
+                        "into the Workbench instead. Steps for another identity (R7) run in that "
+                        "identity's browser; only safe bundles cross browsers, never tokens."
                     )
-                    gr.Markdown("### Showcase", elem_classes=["runbook-group"])
-                    gr.Markdown(
-                        "One key's story in six parts. Run them in order on a fresh server: "
-                        "each continues from the one before (Govern stands alone)."
-                    )
-                    _render_runbook_group(SHOWCASE, tabs)
-                    gr.Markdown("### Deep dives", elem_classes=["runbook-group"])
-                    gr.Markdown("Eight longer runbooks, one topic each. Each stands alone.")
-                    _render_runbook_group(DEEP_DIVES, tabs)
+                    for runbook in RUNBOOKS:
+                        with gr.Accordion(runbook.title, open=False, elem_classes=["rpc-accordion"]):
+                            _render_runbook(runbook, tabs)
+                            # The summary and every step's explanation, hint and
+                            # what to look for: there when wanted, hidden otherwise.
+                            with gr.Accordion("Details", open=False, elem_classes=["rpc-accordion"]):
+                                gr.Markdown(render_markdown(runbook, _resolver))
 
         def _identity(request: gr.Request) -> tuple[str, str]:
             session = sessions.get(request.cookies.get(config.session_cookie_name))
