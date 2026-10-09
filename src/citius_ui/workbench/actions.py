@@ -159,18 +159,17 @@ def _as_bytes(value: Any) -> bytes:
 
 
 def _full_response(message: Any) -> dict[str, Any]:
-    """Render a full response proto as a dict, preserving every populated field.
+    """Render a full response proto as canonical proto3 JSON, with proto field names.
 
-    Uses proto field names (not camelCase) and includes fields left at their
-    default so the Response panel shows the complete server reply rather than a
-    hand-picked subset. Bytes fields are base64-encoded by MessageToDict, which
-    is the faithful JSON representation of protobuf ``bytes``.
+    The Response panel shows exactly what the server sent: every field it set,
+    and no field it left unset. Fields without presence that hold their zero
+    value are unset on the wire, so they are omitted rather than shown as a
+    default the server never stated (``quantum_safe: false``,
+    ``security_strength_bits: 0``). Bytes fields are base64-encoded by
+    MessageToDict, which is the faithful JSON representation of protobuf
+    ``bytes``.
     """
-    rendered: dict[str, Any] = MessageToDict(
-        message,
-        preserving_proto_field_name=True,
-        always_print_fields_with_no_presence=True,
-    )
+    rendered: dict[str, Any] = MessageToDict(message, preserving_proto_field_name=True)
     return rendered
 
 

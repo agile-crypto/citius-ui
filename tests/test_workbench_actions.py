@@ -396,7 +396,7 @@ def test_finalize_scope_params_keeps_friendly_params_without_override() -> None:
 # ── Full response rendering ────────────────────────────────────────────────────
 
 
-def test_full_response_includes_every_field() -> None:
+def test_full_response_shows_only_what_the_server_set() -> None:
     from citius_api.messages.key_management_pb2 import ReadKeyResponse
 
     from citius_ui.workbench.actions import _full_response
@@ -406,14 +406,18 @@ def test_full_response_includes_every_field() -> None:
     response.key_metadata.version = 2
     response.key_metadata.key_id = "kid-9"
     response.key_metadata.template_id = "ecdsa-p256-sha256-der"
+    security = response.key_metadata.scope_spec.signature.security
+    security.quantum_safe = False  # stated false
     rendered = _full_response(response)
     meta = rendered["key_metadata"]
-    # Populated and default-valued fields are both present, with proto names.
     assert meta["name"] == "demo-signing-key"
     assert meta["version"] == 2
     assert meta["key_id"] == "kid-9"
     assert meta["template_id"] == "ecdsa-p256-sha256-der"
-    assert {"provider", "policy", "extractable", "lifecycle_state", "origin"} <= set(meta)
+    # Unset fields are not shown as defaults the server never stated.
+    assert not {"provider", "policy", "extractable", "lifecycle_state", "origin"} & set(meta)
+    # A field with presence keeps a stated false; an unstated one stays absent.
+    assert meta["scope_spec"]["signature"]["security"] == {"quantum_safe": False}
 
 
 def test_full_response_uses_proto_field_names_not_camelcase() -> None:
