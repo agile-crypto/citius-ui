@@ -13,11 +13,10 @@ from citius_ui.showcases.diagram import (
 from citius_ui.showcases.model import Runbook, StepState
 from citius_ui.showcases.replay import StepResult
 from citius_ui.showcases.runbooks import (
-    R1_INTENT,
-    R3_POLICY,
-    R4_AGILITY,
     RUNBOOKS,
     SHOWCASE_CHOOSE,
+    SHOWCASE_GOVERN,
+    SHOWCASE_TRANSFORM,
     SHOWCASE_USE,
 )
 
@@ -38,72 +37,74 @@ def test_every_runbook_draws_each_step_as_a_numbered_request_and_reply() -> None
 
 
 def test_personas_are_actors_in_order_of_appearance() -> None:
-    text = sequence_diagram(R4_AGILITY)
+    text = sequence_diagram(SHOWCASE_TRANSFORM)
     assert text.index("as CISO") < text.index("as Producer") < text.index("as Consumer")
     assert "participant S as Citius" in text
 
 
 def test_expected_refusals_and_bundles_show_in_the_diagram() -> None:
-    text = sequence_diagram(R3_POLICY)
-    assert "S--xa1: PERMISSION_DENIED" in text  # step 5, the producer's refused Sign
-    r4 = sequence_diagram(R4_AGILITY)
-    assert "3. Sign demo-r4-key" in r4 and "keep r4-ecdsa" in r4
-    assert "5. Verify demo-r4-key with r4-ecdsa" in r4
-    assert "ecdsa-p256-sha256-der" in r4  # what CreateKey should return
+    text = sequence_diagram(SHOWCASE_GOVERN)
+    assert "S--xa1: PERMISSION_DENIED" in text  # step 7, the producer's refused Sign
+    assert "ecdsa-p256-sha256-der" in text  # what CreateKey should return
+    use = sequence_diagram(SHOWCASE_USE)
+    assert "1. Sign demo-signing-key" in use and "keep invoice-v1" in use
+    assert "2. Verify demo-signing-key with invoice-v1" in use
 
 
 def test_bands_follow_each_steps_last_result() -> None:
     results = {
-        1: _result(R4_AGILITY, 1, StepState.PASSED),
-        2: _result(R4_AGILITY, 2, StepState.DIFFERS, detail='key_metadata.template_id = "x", expected "y"'),
-        3: _result(R4_AGILITY, 3, StepState.FAILED, status="NOT_FOUND"),
+        1: _result(SHOWCASE_GOVERN, 1, StepState.PASSED),
+        2: _result(SHOWCASE_GOVERN, 2, StepState.DIFFERS, detail='key_metadata.template_id = "x", expected "y"'),
+        3: _result(SHOWCASE_GOVERN, 3, StepState.FAILED, status="NOT_FOUND"),
     }
-    text = sequence_diagram(R4_AGILITY, results)
+    text = sequence_diagram(SHOWCASE_GOVERN, results)
     for state in (StepState.PASSED, StepState.DIFFERS, StepState.FAILED):
         assert text.count(f"rect {FILL[state]}") == 1
     assert "differs: key_metadata.template_id" in text
-    assert "S--xa1: got NOT_FOUND" in text
+    assert "S--xa0: got NOT_FOUND" in text
     # Step 2 is the first that did not go as expected; it keeps its amber band.
-    assert next_step(R4_AGILITY, results) == 2
+    assert next_step(SHOWCASE_GOVERN, results) == 2
     assert NEXT_FILL not in text
 
 
 def test_the_first_step_not_run_is_next() -> None:
-    results = {1: _result(R4_AGILITY, 1, StepState.PASSED)}
-    assert next_step(R4_AGILITY, results) == 2
-    lines = sequence_diagram(R4_AGILITY, results).splitlines()
-    assert lines[lines.index(f"  rect {NEXT_FILL}") + 1].endswith("2. CreateKey demo-r4-key")
-    everything = {i: _result(R4_AGILITY, i, StepState.PASSED) for i in range(1, len(R4_AGILITY.steps) + 1)}
-    assert next_step(R4_AGILITY, everything) is None
+    results = {1: _result(SHOWCASE_GOVERN, 1, StepState.PASSED)}
+    assert next_step(SHOWCASE_GOVERN, results) == 2
+    lines = sequence_diagram(SHOWCASE_GOVERN, results).splitlines()
+    assert lines[lines.index(f"  rect {NEXT_FILL}") + 1].endswith("2. CreateKey demo-governed-key-1")
+    everything = {i: _result(SHOWCASE_GOVERN, i, StepState.PASSED) for i in range(1, len(SHOWCASE_GOVERN.steps) + 1)}
+    assert next_step(SHOWCASE_GOVERN, everything) is None
 
 
 def test_mermaid_separators_in_step_text_are_escaped() -> None:
-    step = dataclasses.replace(R4_AGILITY.steps[1], request={"name": "demo-a;b#c"})
-    runbook = dataclasses.replace(R4_AGILITY, steps=(step,))
+    step = dataclasses.replace(SHOWCASE_GOVERN.steps[1], request={"name": "demo-a;b#c"})
+    runbook = dataclasses.replace(SHOWCASE_GOVERN, steps=(step,))
     text = sequence_diagram(runbook)
     assert "demo-a#59;b#35;c" in text and "demo-a;b" not in text
 
 
 def test_goal_card_ticks_a_proof_once_all_its_steps_passed() -> None:
     pending, proven, refused = (PROOF_MARK[s] for s in (StepState.NOT_RUN, StepState.PASSED, StepState.FAILED))
-    goal = R4_AGILITY.goal
+    goal = SHOWCASE_GOVERN.goal
     assert goal is not None
-    card = goal_card(R4_AGILITY)
+    card = goal_card(SHOWCASE_GOVERN)
     assert card.startswith(f"**{goal.claim}**")
     assert f"{goal.before} → **{goal.after}**" in card
-    assert f"{pending}ECDSA to ML-DSA under the same name · steps 2, 4" in card
+    assert f"{pending}The same request gets a new answer after the CISO reorders the policy · steps 2–4" in card
     assert proven not in card and f"**Proven: 0 of {len(goal.proofs)}**" in card
 
-    results = {i: _result(R4_AGILITY, i, StepState.PASSED) for i in (2, 3, 4)}
-    card = goal_card(R4_AGILITY, results)
-    assert f"{proven}**ECDSA to ML-DSA under the same name** · steps 2, 4" in card
-    # Step 5 has not run, so the second proof is not shown yet.
-    assert f"{pending}The old signature still verifies · steps 3, 5" in card
+    results = {i: _result(SHOWCASE_GOVERN, i, StepState.PASSED) for i in (2, 3, 4)}
+    card = goal_card(SHOWCASE_GOVERN, results)
+    # A proven claim shows its values (none here: the results carry no response).
+    assert f"{proven}**The same request gets a new answer after the CISO reorders the policy** · before" in card
+    # Steps 5–7 have not run, so the second proof is not shown yet.
+    assert f"{pending}A policy change applies on the next call · steps 5–7" in card
     assert f"**Proven: 1 of {len(goal.proofs)}**" in card
 
-    results[5] = _result(R4_AGILITY, 5, StepState.FAILED, status="NOT_FOUND")
-    card = goal_card(R4_AGILITY, results)
-    assert f"{refused}The old signature still verifies · steps 3, 5: not as expected" in card
+    results |= {i: _result(SHOWCASE_GOVERN, i, StepState.PASSED) for i in (5, 6)}
+    results[7] = _result(SHOWCASE_GOVERN, 7, StepState.FAILED, status="OK")
+    card = goal_card(SHOWCASE_GOVERN, results)
+    assert f"{refused}A policy change applies on the next call · steps 5–7: not as expected" in card
 
 
 def test_goal_card_shows_the_values_that_prove_a_claim() -> None:
@@ -124,5 +125,5 @@ def test_goal_card_shows_the_values_that_prove_a_claim() -> None:
 
 
 def test_goal_card_joins_consecutive_steps() -> None:
-    assert "· steps 2–8" in goal_card(R1_INTENT)
-    assert "· step 2" in goal_card(R3_POLICY)
+    assert "· steps 2–4" in goal_card(SHOWCASE_GOVERN)
+    assert "· step 2" in goal_card(SHOWCASE_CHOOSE)

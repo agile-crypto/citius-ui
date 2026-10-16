@@ -15,7 +15,7 @@ from citius_ui.config import AppConfig
 from citius_ui.history.memory_store import MemoryHistoryStore
 from citius_ui.showcases.diagram import FILL
 from citius_ui.showcases.model import StepState
-from citius_ui.showcases.runbooks import R4_AGILITY, R5_PORTABILITY, RUNBOOKS
+from citius_ui.showcases.runbooks import RUNBOOKS, SHOWCASE_GOVERN, SHOWCASE_MOVE
 from citius_ui.workbench.app import build_workbench
 
 
@@ -33,13 +33,15 @@ def test_every_runbook_gets_a_prefill_that_fills_its_step(tmp_path: Path) -> Non
     handlers = _prefill_handlers(tmp_path)
     assert len(handlers) == len(RUNBOOKS)
 
-    # R5's handler: pick "Provider switch" (step 5), a MigrateKey.
-    r5 = next(h for h in handlers if any("demo-r5" in label for label, _ in h.inputs[0].choices))
-    label = next(value for value, _ in r5.inputs[0].choices if value.startswith("5."))
-    updates = r5.fn(label)
-    assert len(updates) == len(r5.outputs)
+    # Move's handler: pick the move into the FIPS module (step 4), a MigrateKey.
+    move = next(
+        h for h in handlers if any("Rekey, naming only the provider type" in label for label, _ in h.inputs[0].choices)
+    )
+    label = next(value for value, _ in move.inputs[0].choices if value.startswith("4."))
+    updates = move.fn(label)
+    assert len(updates) == len(move.outputs)
     values = [_value(u) for u in updates]
-    step = R5_PORTABILITY.steps[4]
+    step = SHOWCASE_MOVE.steps[3]
     assert step.method == "MigrateKey"
     # The method dropdown is set, and the step's request values appear in order.
     assert "MigrateKey" in values
@@ -59,7 +61,7 @@ class _FakeClients:
 
 def _ok_registry(_clients: Any) -> ActionRegistry:
     registry = ActionRegistry()
-    for service, method in R4_AGILITY.required_actions():
+    for service, method in SHOWCASE_GOVERN.required_actions():
 
         async def invoke(request: dict[str, Any]) -> RpcResult:
             return RpcResult(status=ResultStatus.OK, message="done", response={"echo": request.get("name")})
@@ -88,7 +90,7 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     sessions, history = SessionStore(), MemoryHistoryStore()
     session = sessions.create(subject="ciso", display_name="CISO")
     blocks = build_workbench(config, sessions, history)
-    run = _handler(blocks, "_run_runbook_step", "Create policy demo-r4-policy")
+    run = _handler(blocks, "_run_runbook_step", "Create policy demo-governed-policy")
     request = SimpleNamespace(cookies={config.session_cookie_name: session.id})
     first = run.inputs[0].choices[0][0]
 
@@ -100,12 +102,12 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     assert box["label"] == "Response · step 1 (CreateCryptoPolicy, OK)"
     body = json.loads(shown)
     assert body["status"] == "OK" and body["message"] == "done"
-    assert body["request"]["name"] == "demo-r4-policy"
-    assert body["response"] == {"echo": "demo-r4-policy"}
+    assert body["request"]["name"] == "demo-governed-policy"
+    assert body["response"] == {"echo": "demo-governed-policy"}
     # The picker moves on to the next step, and the call is in the session's history.
     assert picker["value"].startswith("2.")
     [record] = history.list(session.history_id)
-    assert (record.method, record.scenario_run_id) == ("CreateCryptoPolicy", "r4-agility:1")
+    assert (record.method, record.scenario_run_id) == ("CreateCryptoPolicy", "govern:1")
     assert _FakeClients.closed >= 1
 
     # Step 2 expects a template in the response; an empty OK differs.
@@ -115,9 +117,11 @@ def test_run_step_runs_through_the_executor_and_colours_the_step(tmp_path: Path,
     assert box["label"].startswith("Response · step 2")
 
     # Picking step 1 again shows its response; picking one not run leaves the view alone.
-    show = _handler(blocks, "_show_response", "Create policy demo-r4-policy")
+    show = _handler(blocks, "_show_response", "Create policy demo-governed-policy")
     box, shown = show.fn(first, state)
-    assert box["label"].startswith("Response · step 1") and json.loads(shown)["request"]["name"] == "demo-r4-policy"
+    assert (
+        box["label"].startswith("Response · step 1") and json.loads(shown)["request"]["name"] == "demo-governed-policy"
+    )
     not_run = run.inputs[0].choices[5][0]
     assert show.fn(not_run, state) == ({"__type__": "update"}, {"__type__": "update"})
 
@@ -143,7 +147,7 @@ def test_each_runbooks_text_sits_in_a_closed_details_section(tmp_path: Path) -> 
 def test_run_step_without_a_session_changes_nothing(tmp_path: Path) -> None:
     config = AppConfig(session_cookie_secure=False, oidc_config_path=tmp_path / "absent.json")
     blocks = build_workbench(config, SessionStore(), MemoryHistoryStore())
-    run = _handler(blocks, "_run_runbook_step", "Create policy demo-r4-policy")
+    run = _handler(blocks, "_run_runbook_step", "Create policy demo-governed-policy")
     request = SimpleNamespace(cookies={})
     _, _, outcome, state, *_ = asyncio.run(run.fn(run.inputs[0].choices[0][0], None, request))
     assert "No active session" in outcome and state == {"results": {}, "bundles": {}}

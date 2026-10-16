@@ -10,7 +10,7 @@ Steps whose outcome depends on the caller's identity (method and resource
 denials) need an authenticated server with the demo identities; without auth
 they are skipped.
 
-    python -m citius_ui.showcases.replay [--endpoint 127.0.0.1:50051] [r1-intent ...]
+    python -m citius_ui.showcases.replay [--endpoint 127.0.0.1:50051] [choose ...]
 """
 
 from __future__ import annotations

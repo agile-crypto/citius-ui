@@ -1186,7 +1186,7 @@ def build_workbench(
                         "Each runbook shows what it proves and, as a sequence diagram, who calls "
                         "what. Pick a step and **Run step** to run it here: the diagram colours it "
                         "by the result, and bundles pass to later steps. **Prefill** loads the step "
-                        "into the Workbench instead. Steps for another identity (R7) run in that "
+                        "into the Workbench instead. Steps for another identity run in that "
                         "identity's browser; only safe bundles cross browsers, never tokens."
                     )
                     for runbook in RUNBOOKS:

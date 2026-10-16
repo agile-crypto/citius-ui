@@ -12,16 +12,15 @@ from citius_ui.actions.registry import ActionRegistry
 from citius_ui.showcases.model import Evidence, ExpectedOutcome, Runbook, RunbookStep, StepState
 from citius_ui.showcases.replay import StepResult, evidence, form_values, judge, replay, run_step
 from citius_ui.showcases.runbooks import (
-    DEEP_DIVES,
-    R3_POLICY,
-    R4_AGILITY,
-    R7_DUTIES,
     RUNBOOKS,
     RUNBOOKS_BY_KEY,
     SHOWCASE,
+    SHOWCASE_CHOOSE,
     SHOWCASE_GOVERN,
+    SHOWCASE_KNOW,
     SHOWCASE_MOVE,
     SHOWCASE_TRANSFORM,
+    SHOWCASE_USE,
     is_runnable,
     look_up,
     render_markdown,
@@ -44,7 +43,7 @@ def _all_steps() -> list[tuple[Runbook, int, RunbookStep]]:
     return [(rb, i, step) for rb in RUNBOOKS for i, step in enumerate(rb.steps, start=1)]
 
 
-def test_the_showcase_then_the_eight_deep_dives_with_unique_keys() -> None:
+def test_the_runbooks_are_the_six_part_showcase_with_unique_keys() -> None:
     assert [rb.title for rb in SHOWCASE] == [
         "1 · Choose",
         "2 · Use",
@@ -53,8 +52,7 @@ def test_the_showcase_then_the_eight_deep_dives_with_unique_keys() -> None:
         "5 · Move",
         "6 · Know",
     ]
-    assert [rb.title.split(" ·")[0] for rb in DEEP_DIVES] == [f"R{n}" for n in range(1, 9)]
-    assert RUNBOOKS == (*SHOWCASE, *DEEP_DIVES)
+    assert RUNBOOKS == SHOWCASE
     assert len({rb.key for rb in RUNBOOKS}) == len(RUNBOOKS)
 
 
@@ -114,7 +112,7 @@ def test_a_runbook_continues_only_from_earlier_showcase_runbooks() -> None:
     for runbook in RUNBOOKS:
         for key in runbook.after:
             assert order.index(key) < order.index(runbook.key), (runbook.key, key)
-    assert all(not rb.after for rb in DEEP_DIVES)
+    assert RUNBOOKS[0].after == ()
 
 
 def test_every_expected_refusal_says_why() -> None:
@@ -128,9 +126,7 @@ def test_every_runbook_has_a_goal_whose_proofs_name_its_steps() -> None:
         goal = runbook.goal
         assert goal is not None, runbook.key
         assert goal.claim and goal.before and goal.after, runbook.key
-        # A deep dive makes two or three points; a showcase part lists every claim it proves.
-        most = 6 if runbook in SHOWCASE else 3
-        assert 2 <= len(goal.proofs) <= most, runbook.key
+        assert 2 <= len(goal.proofs) <= 6, runbook.key
         for proof in goal.proofs:
             assert proof.steps, f"{runbook.key}: {proof.text!r} names no step"
             assert set(proof.steps) <= set(range(1, len(runbook.steps) + 1)), f"{runbook.key}: {proof.text!r}"
@@ -195,19 +191,17 @@ def test_goal_proofs_point_at_the_steps_that_show_them() -> None:
         return runbook.steps[number - 1]
 
     # A refusal proof names the refused step.
-    for runbook in (R3_POLICY, R7_DUTIES):
-        assert runbook.goal is not None
-        for proof in runbook.goal.proofs:
-            if "blocked" in proof.text or "cannot" in proof.text or "denied" in proof.text:
-                assert any(step(runbook, n).expected is not ExpectedOutcome.SUCCESS for n in proof.steps)
-    # R4's "old signature still verifies" is the sign, then the verify of that bundle.
-    assert R4_AGILITY.goal is not None
-    sign, verify = (step(R4_AGILITY, n) for n in R4_AGILITY.goal.proofs[1].steps)
+    assert SHOWCASE_USE.goal is not None
+    for proof in SHOWCASE_USE.goal.proofs:
+        if "cannot" in proof.text:
+            assert any(step(SHOWCASE_USE, n).expected is not ExpectedOutcome.SUCCESS for n in proof.steps)
+    # Use's "another application verifies it" is the sign, then the verify of that bundle.
+    sign, verify = (step(SHOWCASE_USE, n) for n in SHOWCASE_USE.goal.proofs[2].steps)
     assert (sign.method, verify.method, verify.bundle) == ("Sign", "Verify", sign.bundle)
 
 
 def test_form_values_pastes_the_named_bundle_and_rejects_unknown_fields() -> None:
-    consumer = next(s for s in R4_AGILITY.steps if s.method == "Verify")
+    consumer = next(s for s in SHOWCASE_USE.steps if s.method == "Verify")
     spec = FORMS_BY_METHOD[(consumer.service, consumer.method)]
     values = dict(zip((f.key for f in spec.fields), form_values(consumer, {consumer.bundle: '{"x": 1}'}), strict=True))
     assert values["bundle"] == '{"x": 1}'
@@ -236,24 +230,25 @@ def test_look_up_reads_json_strings_and_every_item_of_a_list() -> None:
 
 def test_render_markdown_shows_hints_bundles_and_what_to_look_for() -> None:
     resolve = _resolver_from_overview()
-    text = render_markdown(R7_DUTIES, resolve)
+    text = render_markdown(SHOWCASE_USE, resolve)
     assert "runnable now" in text
+    assert "Continues from 1 · Choose" in text
     assert "PERMISSION_DENIED (method)" in text
     assert "PERMISSION_DENIED (resource)" in text
-    assert "Copy the response bundle as **r7-sig**" in text
-    assert "Paste the **r7-sig** bundle" in text
-    assert "_Why:_ The producer lacks citius:crypto:verify." in text
+    assert "Copy the response bundle as **invoice-v1**" in text
+    assert "Paste the **invoice-v1** bundle" in text
+    assert "_Why:_ The consumer lacks citius:crypto:sign." in text
     assert "never tokens" in text
-    r3 = render_markdown(R3_POLICY, resolve)
-    assert 'Look for `key_metadata.template_id` = `"ml-dsa-87"`' in r3
+    choose = render_markdown(SHOWCASE_CHOOSE, resolve)
+    assert 'Look for `key_metadata.template_id` = `"ml-dsa-65"`' in choose
 
 
 def test_runbook_marked_pending_when_action_unavailable() -> None:
     def resolve(service: str, method: str) -> Availability:
         return Availability.UNIMPLEMENTED
 
-    assert not is_runnable(R3_POLICY, resolve)
-    assert "pending server RPCs" in render_markdown(R3_POLICY, resolve)
+    assert not is_runnable(SHOWCASE_GOVERN, resolve)
+    assert "pending server RPCs" in render_markdown(SHOWCASE_GOVERN, resolve)
 
 
 class _Artifact:
@@ -266,7 +261,7 @@ class _Artifact:
 
 def _fake_registry(responses: dict[str, RpcResult], seen: list[tuple[str, dict[str, Any]]]) -> ActionRegistry:
     registry = ActionRegistry()
-    for service, method in {(s.service, s.method) for s in R4_AGILITY.steps}:
+    for service, method in {(s.service, s.method) for rb in SHOWCASE for s in rb.steps}:
 
         async def invoke(request: dict[str, Any], _method: str = method) -> RpcResult:
             seen.append((_method, request))
@@ -290,26 +285,25 @@ def _fake_registry(responses: dict[str, RpcResult], seen: list[tuple[str, dict[s
 def test_replay_passes_bundles_along_and_checks_what_to_look_for() -> None:
     seen: list[tuple[str, dict[str, Any]]] = []
     responses = {
-        "CreateKey": RpcResult(
-            status=ResultStatus.OK, response={"key_metadata": {"template_id": "ecdsa-p256-sha256-der"}}
-        ),
         # The transform response lacks the version the step looks for.
         "TransformKey": RpcResult(status=ResultStatus.OK, response={"key_metadata": {"template_id": "ml-dsa-65"}}),
+        "Sign": RpcResult(status=ResultStatus.OK, response={"metadata": {"key_version": 2}}),
         "Verify": RpcResult(status=ResultStatus.OK, response={"valid": True}),
     }
-    results = asyncio.run(replay(R4_AGILITY, _fake_registry(responses, seen)))
+    bundles = {"invoice-v1": json.dumps({"key_name": "demo-signing-key", "signature": "djE="})}
+    results = asyncio.run(replay(SHOWCASE_TRANSFORM, _fake_registry(responses, seen), bundles=bundles))
     verify_requests = [request for method, request in seen if method == "Verify"]
-    assert json.loads(verify_requests[0]["bundle"]) == {"key_name": "demo-r4-key", "signature": "c2ln"}
+    assert json.loads(verify_requests[1]["bundle"]) == {"key_name": "demo-signing-key", "signature": "c2ln"}
     failed = [(r.index, r.detail) for r in results if not r.passed]
-    assert failed[0][0] == 4 and "key_metadata.version" in failed[0][1]
+    assert failed == [(1, failed[0][1])] and "key_metadata.version" in failed[0][1]
 
 
 def test_replay_skips_identity_denials_without_the_demo_identities() -> None:
     registry = ActionRegistry()
-    for service, method in R7_DUTIES.required_actions():
+    for service, method in SHOWCASE_USE.required_actions():
 
         async def invoke(request: dict[str, Any]) -> RpcResult:
-            return RpcResult(status=ResultStatus.OK, response={"valid": True})
+            return RpcResult(status=ResultStatus.OK, response={"valid": True, "metadata": {"key_version": 1}})
 
         registry.register(
             RpcAction(
@@ -321,10 +315,10 @@ def test_replay_skips_identity_denials_without_the_demo_identities() -> None:
                 extract_artifacts=lambda request, _result: [_Artifact({"key_name": request["key_name"]})],
             )
         )
-    results = asyncio.run(replay(R7_DUTIES, registry))
+    results = asyncio.run(replay(SHOWCASE_USE, registry))
     skipped = {r.index for r in results if r.skipped}
     assert skipped == {
-        i for i, s in enumerate(R7_DUTIES.steps, 1) if s.expected.value in ("method_denied", "resource_denied")
+        i for i, s in enumerate(SHOWCASE_USE.steps, 1) if s.expected.value in ("method_denied", "resource_denied")
     }
     assert all(r.passed for r in results)
 
@@ -332,9 +326,9 @@ def test_replay_skips_identity_denials_without_the_demo_identities() -> None:
 def test_replay_reports_a_step_the_forms_refuse_and_goes_on() -> None:
     import dataclasses
 
-    timeline = next(s for s in R4_AGILITY.steps if s.method == "ReadKey")
-    bad = dataclasses.replace(timeline, request={"name": "demo-r4-key", "version": "two"})
-    runbook = dataclasses.replace(R4_AGILITY, steps=(bad, timeline))
+    timeline = next(s for s in SHOWCASE_KNOW.steps if s.method == "ReadKey")
+    bad = dataclasses.replace(timeline, request={"name": "demo-signing-key", "version": "two"})
+    runbook = dataclasses.replace(SHOWCASE_KNOW, steps=(bad, timeline))
     results = asyncio.run(replay(runbook, _fake_registry({}, [])))
     assert [r.passed for r in results] == [False, True]
     assert results[0].detail.startswith("form refused")
@@ -354,7 +348,7 @@ def test_replay_takes_bundles_an_earlier_runbook_kept() -> None:
 
 
 def test_judge_tells_a_wrong_status_from_a_different_value() -> None:
-    create = R4_AGILITY.steps[1]
+    create = SHOWCASE_GOVERN.steps[1]
     assert create.look_for == {"key_metadata.template_id": "ecdsa-p256-sha256-der"}
     ok = {"key_metadata": {"template_id": "ecdsa-p256-sha256-der"}}
     assert judge(create, "OK", ok) == (StepState.PASSED, "")
@@ -362,7 +356,7 @@ def test_judge_tells_a_wrong_status_from_a_different_value() -> None:
     assert state is StepState.DIFFERS and "ml-dsa-44" in detail
     assert judge(create, "NOT_FOUND", {})[0] is StepState.FAILED
     # An expected refusal passes on its code alone.
-    refused = R3_POLICY.steps[4]
+    refused = SHOWCASE_GOVERN.steps[6]
     assert refused.expected is ExpectedOutcome.POLICY_REJECTED
     assert judge(refused, "PERMISSION_DENIED", {})[0] is StepState.PASSED
 
@@ -373,14 +367,14 @@ def test_run_step_goes_through_the_given_invoke_and_keeps_the_bundle() -> None:
 
     async def invoke(action: RpcAction, payload: dict[str, Any]) -> RpcResult:
         seen.append(action.method)
-        return RpcResult(status=ResultStatus.OK, response={"valid": True})
+        return RpcResult(status=ResultStatus.OK, response={"valid": True, "metadata": {"key_version": 1}})
 
     bundles: dict[str, str] = {}
-    sign, verify = R4_AGILITY.steps[2], R4_AGILITY.steps[4]
-    first = asyncio.run(run_step(3, sign, registry, bundles, invoke=invoke))
-    assert first.state is StepState.PASSED and set(bundles) == {"r4-ecdsa"}
-    second = asyncio.run(run_step(5, verify, registry, bundles, invoke=invoke))
-    assert (second.index, second.state) == (5, StepState.PASSED)
+    sign, verify = SHOWCASE_USE.steps[0], SHOWCASE_USE.steps[1]
+    first = asyncio.run(run_step(1, sign, registry, bundles, invoke=invoke))
+    assert first.state is StepState.PASSED and set(bundles) == {"invoice-v1"}
+    second = asyncio.run(run_step(2, verify, registry, bundles, invoke=invoke))
+    assert (second.index, second.state) == (2, StepState.PASSED)
     assert seen == ["Sign", "Verify"]
 
 
@@ -388,7 +382,7 @@ def test_run_step_refuses_a_consumer_step_before_its_bundle_exists() -> None:
     async def invoke(action: RpcAction, payload: dict[str, Any]) -> RpcResult:
         raise AssertionError("no call without the bundle")
 
-    verify = R4_AGILITY.steps[4]
-    result = asyncio.run(run_step(5, verify, _fake_registry({}, []), {}, invoke=invoke))
+    verify = SHOWCASE_USE.steps[1]
+    result = asyncio.run(run_step(2, verify, _fake_registry({}, []), {}, invoke=invoke))
     assert (result.status, result.state) == ("", StepState.FAILED)
-    assert "no r4-ecdsa bundle yet" in result.detail
+    assert "no invoice-v1 bundle yet" in result.detail
