@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "citius-python-sdk"
 version = "0.1.0.dev0"
-source = { editable = "../citius-python-sdk" }
+source = { editable = "citius-python-sdk" }
 dependencies = [
     { name = "citius-api-python" },
     { name = "grpcio" },
@@ -314,7 +314,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "citius-python-sdk", editable = "../citius-python-sdk" },
+    { name = "citius-python-sdk", editable = "citius-python-sdk" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "gradio", specifier = ">=5,<6" },
     { name = "httpx", specifier = ">=0.27,<1" },

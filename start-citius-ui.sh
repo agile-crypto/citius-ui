@@ -2,15 +2,15 @@
 # start-citius-ui.sh — launch the Citius Console UI against a local stack.
 #
 # Derives all connection settings from the non-secret config emitted by the
-# citius-server bootstrap (`CITIUS_SERVER=1 make zitadel-up`):
+# citius-server bootstrap (`make zitadel-up-server`):
 #   - citius-stack.json  → gRPC endpoint, TLS CA, TLS server name
 #   - citius-ui-auth.json → OIDC issuer/client + the registered redirect URI,
 #                           from which the UI listen port is derived so the
 #                           hosted-login callback matches.
 #
-# citius-server, citius-ui, and the SDKs are INDEPENDENT repositories. Point
-# CITIUS_SERVER_DIR at your citius-server checkout (defaults to the sibling
-# ../citius-server only when it exists).
+# citius-server is a git submodule of citius-ui (./citius-server). The script
+# uses CITIUS_SERVER_DIR when it is set, and the submodule otherwise; it fails
+# with update instructions when the submodule is not checked out.
 #
 # Usage:
 #   ./start-citius-ui.sh
@@ -30,17 +30,27 @@ command -v uv >/dev/null 2>&1 || die "uv is required (https://docs.astral.sh/uv/
 # Resolve this script's directory so it works regardless of the caller's CWD.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Locate the citius-server checkout (independent repo).
-default_server_dir="$(cd "$SCRIPT_DIR/../citius-server" 2>/dev/null && pwd || true)"
-CITIUS_SERVER_DIR="${CITIUS_SERVER_DIR:-$default_server_dir}"
-[[ -n "$CITIUS_SERVER_DIR" ]] || die "set CITIUS_SERVER_DIR to your citius-server checkout"
-[[ -d "$CITIUS_SERVER_DIR" ]] || die "CITIUS_SERVER_DIR does not exist: $CITIUS_SERVER_DIR"
+# Locate the citius-server checkout: CITIUS_SERVER_DIR when set, otherwise the
+# ./citius-server submodule. There is no other fallback.
+if [[ -n "${CITIUS_SERVER_DIR:-}" ]]; then
+  [[ -d "$CITIUS_SERVER_DIR" ]] || die "CITIUS_SERVER_DIR does not exist: $CITIUS_SERVER_DIR"
+else
+  CITIUS_SERVER_DIR="$SCRIPT_DIR/citius-server"
+  if [[ ! -d "$CITIUS_SERVER_DIR/bootstrap/zitadel" ]]; then
+    die "the citius-server submodule is missing or not checked out: $CITIUS_SERVER_DIR
+Initialize or update it from $SCRIPT_DIR with:
+  git submodule update --init citius-server
+If it is still broken, reset it with:
+  git submodule deinit -f citius-server && git submodule update --init citius-server
+Or set CITIUS_SERVER_DIR to another citius-server checkout."
+  fi
+fi
 
 Z="$CITIUS_SERVER_DIR/bootstrap/zitadel"
 stack="$Z/citius-stack.json"
 ui_auth="$Z/citius-ui-auth.json"
 
-[[ -f "$stack" ]]   || die "missing $stack — run 'CITIUS_SERVER=1 make zitadel-up' in $CITIUS_SERVER_DIR first"
+[[ -f "$stack" ]]   || die "missing $stack — run 'make zitadel-up-server' (add ENGINE=podman for Podman) in $CITIUS_SERVER_DIR first"
 [[ -f "$ui_auth" ]] || die "missing $ui_auth — run the citius-server bootstrap first"
 
 endpoint="$(jq -r '.citius_server.endpoint // empty' "$stack")"

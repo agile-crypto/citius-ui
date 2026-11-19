@@ -56,7 +56,7 @@ class AppConfig:
     citius_tls_ca: Path | None = None
     citius_tls_server_name: str | None = None
     citius_request_timeout_seconds: float = 10.0
-    oidc_config_path: Path = Path("../citius-server/bootstrap/zitadel/citius-ui-auth.json")
+    oidc_config_path: Path = Path("citius-server/bootstrap/zitadel/citius-ui-auth.json")
     oidc_ca_cert: Path | None = None
     session_cookie_name: str = "citius_session"
     session_cookie_secure: bool = True
@@ -97,7 +97,7 @@ class AppConfig:
         server_name = source.get("CITIUS_TLS_SERVER_NAME", "").strip() or None
         oidc_path = source.get(
             "CITIUS_OIDC_CONFIG_PATH",
-            "../citius-server/bootstrap/zitadel/citius-ui-auth.json",
+            "citius-server/bootstrap/zitadel/citius-ui-auth.json",
         ).strip()
         if not oidc_path:
             raise ValueError("CITIUS_OIDC_CONFIG_PATH must be non-empty")

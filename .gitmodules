@@ -1,4 +1,8 @@
 [submodule "citius-server"]
 	path = citius-server
 	url = git@github.com:agile-crypto/citius-server.git
-	branch = feat/inmem-storage
+	branch = latest
+[submodule "citius-python-sdk"]
+	path = citius-python-sdk
+	url = git@github.com:agile-crypto/citius-python-sdk.git
+	branch = main
