@@ -1,0 +1,8 @@
+[submodule "citius-server"]
+	path = citius-server
+	url = git@github.com:agile-crypto/citius-server.git
+	branch = feat/inmem-storage
+[submodule "api"]
+	path = api
+	url = git@github.com:agile-crypto/api.git
+	branch = main
