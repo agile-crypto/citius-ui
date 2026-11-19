@@ -3,9 +3,12 @@
 #
 # Called by the Makefile targets `start`, `stop` and `reset`:
 #   start   check prerequisites, start Zitadel + the containerized citius-server
-#           (make zitadel-up-server), run the smoke test when openssl is
-#           available, print the addresses and demo users, then run the UI in
-#           the foreground (Ctrl+C stops the UI).
+#           (make zitadel-up-server) unless they are already running from this
+#           checkout, run the smoke test when openssl is available, print the
+#           addresses and demo users, then run the UI in the foreground (Ctrl+C
+#           stops only the UI, so the next start reuses the running stack).
+#   restart like start, but always stops the stack first (make zitadel-down)
+#           and starts it again, rebuilding the citius-server image.
 #   stop    stop the stack (make zitadel-down), keeping its data.
 #   reset   wipe the stack (make zitadel-nuke): data volumes, generated config
 #           and .env. The next start regenerates every secret.
@@ -24,6 +27,7 @@ readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="${CITIUS_SERVER_DIR:-$ROOT_DIR/citius-server}"
 readonly SDK_DIR="$ROOT_DIR/citius-python-sdk"
 readonly OS="$(uname -s)"
+readonly COMPOSE_PROJECT="citius-zitadel"   # project name used by bootstrap.sh
 
 # ---------------------------------------------------------------------------
 # Output: only the WARN / ERROR keywords are colored, and only on a terminal.
@@ -327,7 +331,45 @@ server_make() {
   ENGINE="$ENGINE" make -C "$SERVER_DIR" --no-print-directory "$@"
 }
 
+# container_state SERVICE prints "status|health|compose working dir" for the
+# stack's container of that compose service, or nothing when there is none.
+container_state() {
+  local id
+  id="$("$ENGINE" ps -aq \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -n 1)"
+  [[ -n "$id" ]] || return 0
+  "$ENGINE" inspect --format \
+    '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+    "$id" 2>/dev/null || true
+}
+
+# stack_is_running succeeds when the proxy is running, Zitadel and citius-server
+# are healthy, all were started from this checkout, and the config the UI reads
+# has been emitted. It exits with an error when the stack's containers belong to
+# another citius-server checkout, because starting ours would collide with it.
+stack_is_running() {
+  local z="$SERVER_DIR/bootstrap/zitadel" want_dir svc state status health dir running=0
+  want_dir="$(cd "$z" && pwd -P)"
+  for svc in proxy zitadel-api citius-server; do
+    state="$(container_state "$svc")"
+    if [[ -z "$state" ]]; then running=1; continue; fi
+    IFS='|' read -r status health dir <<<"$state"
+    if [[ -n "$dir" && "$(cd "$dir" 2>/dev/null && pwd -P || true)" != "$want_dir" ]]; then
+      error "a $COMPOSE_PROJECT stack started from $dir already exists; stop it from that checkout first: (cd ${dir%/bootstrap/zitadel} && ENGINE=$ENGINE make zitadel-down)"
+      exit 1
+    fi
+    if [[ "$status" != "running" ]]; then running=1; fi
+    if [[ "$svc" != "proxy" && "$health" != "healthy" ]]; then running=1; fi
+  done
+  if [[ ! -s "$z/citius-stack.json" || ! -s "$z/citius-ui-auth.json" ]]; then running=1; fi
+  return "$running"
+}
+
+# cmd_start [restart] starts the stack when needed (always with restart), then
+# the UI.
 cmd_start() {
+  local mode="${1:-start}"
   info "Checking prerequisites"
   check_submodules
   detect_engine
@@ -342,8 +384,19 @@ cmd_start() {
   fi
 
   info ""
-  info "Starting Zitadel and citius-server with $ENGINE (the first start pulls images and builds the server)"
-  server_make zitadel-up-server
+  if [[ "$mode" == "restart" ]]; then
+    stack_is_running || true   # only for its check against another checkout's stack
+    info "Restarting Zitadel and citius-server with $ENGINE: stopping the stack (data is kept)"
+    server_make zitadel-down
+    info ""
+    info "Starting Zitadel and citius-server with $ENGINE (rebuilds the citius-server image)"
+    server_make zitadel-up-server
+  elif stack_is_running; then
+    info "Zitadel and citius-server are already running from $SERVER_DIR: not restarting them ('make restart' forces a restart)"
+  else
+    info "Starting Zitadel and citius-server with $ENGINE (the first time, this pulls images and builds the server)"
+    server_make zitadel-up-server
+  fi
 
   if (( smoke )); then
     info ""
@@ -393,7 +446,8 @@ cmd_check() {
 case "${1:-}" in
   check) cmd_check ;;
   start) cmd_start ;;
+  restart) cmd_start restart ;;
   stop)  cmd_stop ;;
   reset) cmd_reset ;;
-  *)     error "usage: $0 check|start|stop|reset"; exit 2 ;;
+  *)     error "usage: $0 check|start|restart|stop|reset"; exit 2 ;;
 esac
