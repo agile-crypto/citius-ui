@@ -281,9 +281,7 @@ _SAMPLE_SIGNING_POLICY_V2 = json.dumps(
 _SAMPLE_NEXTCLOUD_POLICY = json.dumps(
     {
         "version": "1",
-        "allowed_operations": {
-            "key_operations": ["create_key", "sign", "verify"]
-        },
+        "allowed_operations": {"key_operations": ["create_key", "sign", "verify"]},
         "allowed_templates": ["ecdsa-p256-sha256-der", "rsa-pkcs1v15-sha256-2048", "ml-dsa-44"],
     },
     indent=2,
@@ -291,9 +289,7 @@ _SAMPLE_NEXTCLOUD_POLICY = json.dumps(
 _SAMPLE_NEXTCLOUD_POLICY_QS = json.dumps(
     {
         "version": "1",
-        "allowed_operations": {
-            "key_operations": ["create_key", "sign", "verify"]
-        },
+        "allowed_operations": {"key_operations": ["create_key", "sign", "verify"]},
         "allowed_templates": ["ml-dsa-44"],
     },
     indent=2,
