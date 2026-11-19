@@ -6,7 +6,7 @@ hosted login. A standalone mock (`citius-ui-mock`) also runs without any server;
 its cryptography is placeholder only, so it must not be used to validate
 security behavior.
 
-## Getting started
+## 1. Getting started
 
 These steps start a local Zitadel + `citius-server` stack in containers, then
 the Citius UI against it. Both `citius-server` and `citius-python-sdk` are git
@@ -15,14 +15,14 @@ submodules of this repository, so a single recursive clone brings everything.
 The stack runs with either Docker or Podman. **Podman has been tested on macOS;
 Docker has not been tested yet**, on either OS.
 
-### Prerequisites
+### 1.1 Prerequisites
 
 - You need an SSH key registered with GitHub that can read the
 `agile-crypto/citius-server` and `agile-crypto/citius-python-sdk` repositories, as the submodule URLs use SSH. You can find the details to generate a new SSH key [here](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent). 
 - Ports **8880**, **8443**, **50051** and **7861**
 must be free on the host.
 
-#### macOS
+#### 1.1.1 macOS
 
 | Tool | Install | Why |
 |---|---|---|
@@ -52,7 +52,7 @@ must be free on the host.
 context use desktop-linux` is selected, so `docker` talks to Docker Desktop and
 not to another engine.
 
-#### Linux
+#### 1.1.2 Linux
 
 | Tool | Debian / Ubuntu | Fedora / RHEL | Why |
 |---|---|---|---|
@@ -79,7 +79,7 @@ sudo ln -sf "/run/user/$(id -u)/podman/podman.sock" /var/run/docker.sock   # onl
 
 SELinux (Fedora/RHEL) is handled automatically when `ENGINE=podman` is set.
 
-### One-time setup
+### 1.2 One-time setup
 
 ```bash
 # Trust the mkcert local CA (system store + browsers). Asks for your password.
@@ -93,45 +93,69 @@ cd citius-ui
 If you already cloned without `--recurse-submodules`, run
 `git submodule update --init`.
 
-### Start the stack and the UI
+### 1.3 Start the stack and the UI
 
 ```bash
-# 1. Zitadel + containerized citius-server, demo users provisioned.
-#    Podman:
-( cd citius-server && ENGINE=podman make zitadel-up-server )
-#    Docker:
-( cd citius-server && make zitadel-up-server )
-
-# 2. Optional preflight: the emitted config points at a reachable, trusted stack.
-#    Needs openssl, which is preinstalled on macOS and most Linux distributions.
-citius-server/bootstrap/zitadel/smoke-test.sh
-
-# 3. The UI, configured from the stack's emitted config.
-./start-citius-ui.sh
+make start
 ```
+
+`make start`:
+
+1. Checks the prerequisites and reports everything that is missing.
+2. Picks the container engine: Docker when `docker compose` works, otherwise
+   Podman. Force one with `ENGINE=docker make start` or
+   `ENGINE=podman make start`.
+3. Starts Zitadel and the containerized `citius-server`, and provisions the
+   demo users. If they are already running from this checkout, it reuses them.
+4. Runs the smoke test, which checks that the stack is reachable and trusted.
+   It is skipped with a warning when `openssl` is not installed.
+5. Prints the addresses and the demo users, then runs the UI in the foreground.
 
 The first start pulls images and builds `citius-server`, which takes a few
 minutes. Then open <http://127.0.0.1:7861/login> and sign in as one of the
-demo users `citius-ciso`, `citius-producer` or `citius-consumer`. Their
-passwords are `CITIUS_DEMO_CISO_PASSWORD`, `CITIUS_DEMO_PRODUCER_PASSWORD` and
-`CITIUS_DEMO_CONSUMER_PASSWORD` in `citius-server/bootstrap/zitadel/.env`.
+demo users:
 
-### Stop
+| Username | Password | Role |
+|---|---|---|
+| `citius-ciso` | `CitiusCiso1!` | CISO: manages crypto policies (read and write) and the key lifecycle (create, read, rotate, change a key's policy). Cannot sign, encrypt, verify or decrypt. |
+| `citius-producer` | `CitiusProducer1!` | Producer: creates keys, then signs and encrypts with them. Reads policies. |
+| `citius-consumer` | `CitiusConsumer1!` | Consumer: verifies signatures and decrypts ciphertexts. Reads keys and policies. |
 
-Stop the UI with `Ctrl+C`, then stop the stack (add `ENGINE=podman` for
-Podman; data and generated config are kept for the next start):
+All three work on the `demo-*` keys and policies; the producer and the consumer
+cannot use the `demo-restricted-*` ones. Permissions are defined in
+`citius-server/bootstrap/zitadel/acl.yaml`.
+
+The passwords are the defaults from
+`citius-server/bootstrap/zitadel/.env.example`. The values actually in use are
+in `citius-server/bootstrap/zitadel/.env` (`CITIUS_DEMO_*_PASSWORD`), and
+`make start` prints them.
+
+### 1.4 Stop
+
+Stop the UI with `Ctrl+C`. The stack keeps running, so the next `make start`
+only starts the UI. To stop the stack too (its data and generated config are
+kept for the next start):
 
 ```bash
-( cd citius-server && ENGINE=podman make zitadel-down )
+make stop
 ```
 
-`CITIUS_SERVER=1 make zitadel-reset` wipes the data volumes and provisions a
-fresh stack with the containerized server; `make zitadel-nuke` also deletes
-`.env`, so the next start regenerates every secret. See
-[Local test stack](#local-test-stack-zitadel--citius-server) below and
+### 1.5 Other available commands
+
+Run these from the repository root. Each one detects the container engine
+unless `ENGINE=docker` or `ENGINE=podman` is set. `make` alone lists them.
+
+| Command | What it does |
+|---|---|
+| `make start` | Checks the prerequisites, starts the stack unless it is already running, runs the smoke test, prints the addresses and demo users, then runs the UI in the foreground. |
+| `make restart` | Like `make start`, but always stops and restarts the stack first, rebuilding the `citius-server` image from the submodule's source. Data is kept. |
+| `make stop` | Stops the stack and keeps its data. Stop the UI with `Ctrl+C`. |
+| `make reset` | Wipes the stack: data volumes, generated config and `citius-server/bootstrap/zitadel/.env`. The next `make start` provisions a fresh stack with new secrets. |
+
+See [section 4, Local test stack](#4-local-test-stack-zitadel--citius-server) below and
 `citius-server/bootstrap/zitadel/README.md` for details and troubleshooting.
 
-## What the prototype explores
+## 2. What the prototype explores
 
 
 - One focused **API Workbench**, plus a compact multi-browser demo runbook.
@@ -145,7 +169,7 @@ fresh stack with the containerized server; `make zitadel-nuke` also deletes
   and a copyable value-plus-operation-metadata bundle for backward-compatibility tests.
 - Visible success, `PERMISSION_DENIED`, and `UNIMPLEMENTED` outcomes.
 
-## Run without the stack (mock)
+## 3. Run without the stack (mock)
 
 The mock needs only `uv` and the submodules; it does not connect to Citius or
 Zitadel:
@@ -158,11 +182,11 @@ uv run citius-ui-mock
 Then open <http://127.0.0.1:7860>. If that port is already occupied, set
 `CITIUS_UI_PORT`, for example `CITIUS_UI_PORT=7862 uv run citius-ui-mock`.
 
-### FastAPI host with server-side sessions
+### 3.1 FastAPI host with server-side sessions
 
 The `citius-ui` entry point mounts the Gradio Workbench inside FastAPI behind an
 opaque, HTTP-only session cookie. Against the local stack, users sign in through
-the hosted login at `/login` (see [Hosted login](#hosted-login-authorization-code--pkce));
+the hosted login at `/login` (see [section 4.1, Hosted login](#41-hosted-login-authorization-code--pkce));
 a development sign-in at `/` seeds one of the demo personas per browser session.
 
 ```bash
@@ -186,13 +210,13 @@ submodule generates `citius-server/bootstrap/zitadel/citius-ui-auth.json`.
 set it explicitly when running from another directory or against another
 `citius-server` checkout.
 
-## Local test stack (Zitadel + citius-server)
+## 4. Local test stack (Zitadel + citius-server)
 
 The `citius-server` submodule owns a one-command local stack. It brings up
 **Zitadel and a containerized `citius-server` together**, provisions the
 CISO/producer/consumer demo users, and emits the non-secret config this UI
 consumes. The UI never starts Zitadel or the server itself — it only reads the
-emitted config. [Getting started](#getting-started) has the commands and
+emitted config. [Section 1, Getting started](#1-getting-started) has the commands and
 prerequisites; `citius-server/bootstrap/zitadel/README.md` covers the full
 lifecycle.
 
@@ -248,7 +272,7 @@ the JWKS; without it the hosted-login callback returns 401. The UI forwards the
 current session's hosted-login token to the Python SDK per RPC; the server
 enforces its own method and resource authorization.
 
-### Hosted login (Authorization Code + PKCE)
+### 4.1 Hosted login (Authorization Code + PKCE)
 
 `GET /login` starts the production-style flow: the UI generates PKCE + state +
 nonce and redirects the browser to the Zitadel hosted login. After sign-in,
@@ -271,7 +295,7 @@ Tear down or reset from the `citius-server` directory (prefix each command with
 | `CITIUS_SERVER=1 make zitadel-reset` | Stop, wipe data volumes and generated artefacts, then start again with the containerized server. |
 | `make zitadel-nuke` | Stop, wipe data volumes, generated artefacts and `.env`; the next start regenerates every secret. |
 
-## Test
+## 5. Test
 
 ```bash
 uv run ruff format --check src tests
@@ -284,7 +308,7 @@ uv build
 CI runs the same gates and Gitleaks secret scanning. This project uses the
 Apache-2.0 license, matching the Citius server and Python SDK repositories.
 
-## Mock limitations
+## 6. Mock limitations
 
 - Authentication is a mock sign-in screen, not Zitadel login. Switching identity
   requires logout; use separate browser profiles for concurrent demo users.
