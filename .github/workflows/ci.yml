@@ -19,6 +19,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          # Oldest supported version (requires-python, mypy and ruff targets).
+          python-version: "3.11"
       - run: uv sync --extra dev --locked
       - run: uv run ruff format --check src tests
       - run: uv run ruff check src tests
