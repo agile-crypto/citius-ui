@@ -498,7 +498,16 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 },
             ),
             Example(
-                "Remove ECDSA and RSA",
+                "Nextcloud webauthn with ECDSA-P256",
+                {
+                    "name": "nextcloud-webauthn",
+                    "policy_document": _SAMPLE_NEXTCLOUD_POLICY,
+                    "format": "json",
+                    "expected_version": 1,
+                },
+            ),
+            Example(
+                "ML-DSA-44 only",
                 {
                     "name": "nextcloud-webauthn",
                     "policy_document": _SAMPLE_NEXTCLOUD_POLICY_QS,
