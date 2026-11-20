@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, TypeVar
 
 import grpc
 import pytest
@@ -9,6 +12,20 @@ from citius_sdk.errors import AuthenticationError, FailedPreconditionError, Perm
 from citius_ui.actions.model import Availability, ResultStatus
 from citius_ui.grpc_client.serialization import encode_bytes, error_result
 from citius_ui.workbench.actions import CONTRACT_ONLY, IMPLEMENTED, registry_overview
+
+if TYPE_CHECKING:
+    from citius_sdk.services.crypto import SignRequest
+
+_T = TypeVar("_T")
+
+
+def _run(awaitable: Awaitable[_T]) -> _T:
+    """Run an action's awaitable to completion (asyncio.run takes only coroutines)."""
+
+    async def wait() -> _T:
+        return await awaitable
+
+    return asyncio.run(wait())
 
 
 def test_registry_overview_marks_implemented_and_contract_only() -> None:
@@ -91,7 +108,6 @@ def test_metadata_proto_rejects_invalid_json() -> None:
 
 
 def test_normalized_maps_missing_field_to_invalid_argument() -> None:
-    import asyncio
 
     from citius_ui.actions.model import ResultStatus, RpcResult
     from citius_ui.workbench.actions import _normalized, _require_text
@@ -100,13 +116,12 @@ def test_normalized_maps_missing_field_to_invalid_argument() -> None:
         _require_text(request, "key_name")
         return RpcResult(status=ResultStatus.OK)
 
-    result = asyncio.run(_normalized(invoke)({}))
+    result = _run(_normalized(invoke)({}))
     assert result.status is ResultStatus.INVALID_ARGUMENT
     assert "'key_name' is required" in result.message
 
 
 def test_normalized_maps_unexpected_error_to_unavailable() -> None:
-    import asyncio
 
     from citius_ui.actions.model import ResultStatus, RpcResult
     from citius_ui.workbench.actions import _normalized
@@ -114,7 +129,7 @@ def test_normalized_maps_unexpected_error_to_unavailable() -> None:
     async def invoke(request: dict[str, object]) -> RpcResult:
         raise RuntimeError("channel closed")
 
-    result = asyncio.run(_normalized(invoke)({}))
+    result = _run(_normalized(invoke)({}))
     assert result.status is ResultStatus.UNAVAILABLE
     assert "channel closed" in result.message
 
@@ -202,7 +217,7 @@ def test_key_scope_spec_takes_only_sdk_scope_names() -> None:
             _key_scope_spec({"scope": name})
 
 
-def _sign_request_proto() -> object:
+def _sign_request_proto() -> SignRequest:
     from citius_sdk.services.crypto import SignRequest
 
     return SignRequest(key_name="k", input=b"m")
@@ -435,7 +450,6 @@ def test_full_response_uses_proto_field_names_not_camelcase() -> None:
 
 
 def test_transform_key_retain_bytes_requires_template_id() -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_ui.actions.registry import ActionRegistry
@@ -448,19 +462,18 @@ def test_transform_key_retain_bytes_requires_template_id() -> None:
     registry = ActionRegistry()
     _register_keys(registry, SimpleNamespace(key_management=_NoCallKeyManagement()))  # type: ignore[arg-type]
     action = registry.get("KeyManagementService", "TransformKey")
+    assert action.invoke is not None
 
-    result = asyncio.run(
-        action.invoke({"name": "demo-signing-key", "retain_key_bytes": True, "scope": "SIGNATURE_STANDARD"})
-    )
+    result = _run(action.invoke({"name": "demo-signing-key", "retain_key_bytes": True, "scope": "SIGNATURE_STANDARD"}))
     assert result.status is ResultStatus.INVALID_ARGUMENT
     assert "'template_id' is required when 'retain_key_bytes' is set" in result.message
 
 
 def test_migrate_key_builds_the_request_from_the_form() -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_api.messages.key_management_pb2 import MigrateKeyResponse, MigrationStrategy
+    from citius_api.types.implementation_pb2 import Fips140Level
     from citius_sdk.services.key_management import MigrateKeyResult
 
     from citius_ui.actions.registry import ActionRegistry
@@ -478,7 +491,7 @@ def test_migrate_key_builds_the_request_from_the_form() -> None:
             response.result.source_instance_id = "software"
             response.result.strategy_used = MigrationStrategy.MIGRATION_STRATEGY_REKEY_AND_ARCHIVE
             response.result.target_implementation.fips_140.certified = True
-            response.result.target_implementation.fips_140.level = 1
+            response.result.target_implementation.fips_140.level = Fips140Level.FIPS_140_LEVEL_1
             response.archived_key_info.archived_key_name = "demo-signing-key@1"
             response.archived_key_info.provider_id = "software"
             return MigrateKeyResult(response)
@@ -486,9 +499,10 @@ def test_migrate_key_builds_the_request_from_the_form() -> None:
     registry = ActionRegistry()
     _register_keys(registry, SimpleNamespace(key_management=_KeyManagement()))  # type: ignore[arg-type]
     action = registry.get("KeyManagementService", "MigrateKey")
+    assert action.invoke is not None
     assert action.availability is Availability.AVAILABLE
 
-    result = asyncio.run(
+    result = _run(
         action.invoke({"name": "demo-signing-key", "strategy": "REKEY_AND_ARCHIVE", "target_provider_id": "openssl"})
     )
     assert result.status is ResultStatus.OK
@@ -514,7 +528,6 @@ def test_migrate_key_builds_the_request_from_the_form() -> None:
     ],
 )
 def test_migrate_key_rejects_bad_input_before_the_server(request_fields: dict[str, str], message: str) -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_ui.actions.registry import ActionRegistry
@@ -527,13 +540,13 @@ def test_migrate_key_rejects_bad_input_before_the_server(request_fields: dict[st
     registry = ActionRegistry()
     _register_keys(registry, SimpleNamespace(key_management=_NoCallKeyManagement()))  # type: ignore[arg-type]
     action = registry.get("KeyManagementService", "MigrateKey")
-    result = asyncio.run(action.invoke({"name": "demo-signing-key", **request_fields}))
+    assert action.invoke is not None
+    result = _run(action.invoke({"name": "demo-signing-key", **request_fields}))
     assert result.status is ResultStatus.INVALID_ARGUMENT
     assert message in result.message
 
 
 def test_list_keys_summarizes_the_inventory() -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_api.messages.key_management_pb2 import ListKeysResponse
@@ -565,7 +578,7 @@ def test_list_keys_summarizes_the_inventory() -> None:
     assert action.availability is Availability.AVAILABLE
     assert action.invoke is not None
 
-    result = asyncio.run(action.invoke({"provider_id": "openssl", "lifecycle_state": "ACTIVE", "page_size": 1}))
+    result = _run(action.invoke({"provider_id": "openssl", "lifecycle_state": "ACTIVE", "page_size": 1}))
     assert result.status is ResultStatus.OK
     assert result.response["next_page_token"] == "1"
     (row,) = result.response["keys"]
@@ -587,7 +600,6 @@ def test_list_keys_summarizes_the_inventory() -> None:
     ],
 )
 def test_list_keys_rejects_bad_input_before_the_server(request_fields: dict[str, object], message: str) -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_ui.actions.registry import ActionRegistry
@@ -601,13 +613,12 @@ def test_list_keys_rejects_bad_input_before_the_server(request_fields: dict[str,
     _register_keys(registry, SimpleNamespace(key_management=_NoCall()))  # type: ignore[arg-type]
     action = registry.get("KeyManagementService", "ListKeys")
     assert action.invoke is not None
-    result = asyncio.run(action.invoke(request_fields))
+    result = _run(action.invoke(request_fields))
     assert result.status is ResultStatus.INVALID_ARGUMENT
     assert message in result.message
 
 
 def test_validate_key_operation_explains_each_strategy() -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_api.messages.key_management_pb2 import MigrationStrategy, ValidateKeyOperationResponse
@@ -639,7 +650,7 @@ def test_validate_key_operation_explains_each_strategy() -> None:
     action = registry.get("KeyManagementService", "ValidateKeyOperation")
     assert action.invoke is not None
 
-    result = asyncio.run(
+    result = _run(
         action.invoke(
             {"name": "demo-signing-key", "target_instance_id": "openssl", "preferred_strategy": "PROVIDER_SWITCH"}
         )
@@ -661,7 +672,6 @@ def test_validate_key_operation_explains_each_strategy() -> None:
 
 
 def test_validate_key_operation_without_a_feasible_strategy_says_so() -> None:
-    import asyncio
     from types import SimpleNamespace
 
     from citius_api.messages.key_management_pb2 import ValidateKeyOperationResponse
@@ -678,7 +688,7 @@ def test_validate_key_operation_without_a_feasible_strategy_says_so() -> None:
     _register_keys(registry, SimpleNamespace(key_management=_KeyManagement()))  # type: ignore[arg-type]
     action = registry.get("KeyManagementService", "ValidateKeyOperation")
     assert action.invoke is not None
-    result = asyncio.run(action.invoke({"name": "k", "target_provider_id": "hsm"}))
+    result = _run(action.invoke({"name": "k", "target_provider_id": "hsm"}))
     assert result.status is ResultStatus.OK
     assert result.message == "no strategy is feasible"
 

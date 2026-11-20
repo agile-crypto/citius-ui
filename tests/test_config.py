@@ -13,7 +13,7 @@ def test_defaults_are_safe_for_local_tls() -> None:
     assert config.citius_endpoint == "localhost:50051"
     assert config.citius_tls_enabled is True
     assert config.session_cookie_secure is True
-    assert config.oidc_config_path == Path("../citius-server/bootstrap/zitadel/citius-ui-auth.json")
+    assert config.oidc_config_path == Path("citius-server/bootstrap/zitadel/citius-ui-auth.json")
 
 
 def test_environment_values_are_parsed() -> None:

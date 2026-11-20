@@ -1,0 +1,8 @@
+[submodule "citius-server"]
+	path = citius-server
+	url = https://github.com/agile-crypto/citius-server.git
+	branch = latest
+[submodule "citius-python-sdk"]
+	path = citius-python-sdk
+	url = https://github.com/agile-crypto/citius-python-sdk.git
+	branch = main

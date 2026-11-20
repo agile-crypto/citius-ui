@@ -278,7 +278,22 @@ _SAMPLE_SIGNING_POLICY_V2 = json.dumps(
     },
     indent=2,
 )
-
+_SAMPLE_NEXTCLOUD_POLICY = json.dumps(
+    {
+        "version": "1",
+        "allowed_operations": {"key_operations": ["create_key", "sign", "verify"]},
+        "allowed_templates": ["ecdsa-p256-sha256-der", "rsa-pkcs1v15-sha256-2048", "ml-dsa-44"],
+    },
+    indent=2,
+)
+_SAMPLE_NEXTCLOUD_POLICY_QS = json.dumps(
+    {
+        "version": "1",
+        "allowed_operations": {"key_operations": ["create_key", "sign", "verify"]},
+        "allowed_templates": ["ml-dsa-44"],
+    },
+    indent=2,
+)
 
 # ── Shared scope, security-property and provider-requirement fields ───────────
 #
@@ -440,6 +455,10 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 "Verify-only policy",
                 {"name": "demo-restricted-policy", "policy_document": _SAMPLE_RESTRICTED_POLICY, "format": "json"},
             ),
+            Example(
+                "FIDO2 Nextcloud authentication policy",
+                {"name": "nextcloud-webauthn", "policy_document": _SAMPLE_NEXTCLOUD_POLICY, "format": "json"},
+            ),
         ),
     ),
     RpcFormSpec(
@@ -470,6 +489,24 @@ FORMS: tuple[RpcFormSpec, ...] = (
                 {
                     "name": "demo-signing-policy",
                     "policy_document": _SAMPLE_SIGNING_POLICY_V2,
+                    "format": "json",
+                    "expected_version": 1,
+                },
+            ),
+            Example(
+                "Nextcloud webauthn with ECDSA-P256",
+                {
+                    "name": "nextcloud-webauthn",
+                    "policy_document": _SAMPLE_NEXTCLOUD_POLICY,
+                    "format": "json",
+                    "expected_version": 1,
+                },
+            ),
+            Example(
+                "ML-DSA-44 only",
+                {
+                    "name": "nextcloud-webauthn",
+                    "policy_document": _SAMPLE_NEXTCLOUD_POLICY_QS,
                     "format": "json",
                     "expected_version": 1,
                 },

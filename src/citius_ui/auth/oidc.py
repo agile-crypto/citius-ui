@@ -14,6 +14,7 @@ import hashlib
 import json
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlencode
@@ -298,7 +299,7 @@ class Identity:
     claims: dict[str, object] = field(default_factory=dict)
 
 
-def refine_identity(identity: Identity, claims: dict[str, object]) -> Identity:
+def refine_identity(identity: Identity, claims: Mapping[str, object]) -> Identity:
     """Recompute username/display_name/email from claims that may include userinfo.
 
     Zitadel only embeds profile claims (name, preferred_username, email) in the
