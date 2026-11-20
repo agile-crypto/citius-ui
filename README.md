@@ -6,6 +6,22 @@ hosted login. A standalone mock (`citius-ui-mock`) also runs without any server;
 its cryptography is placeholder only, so it must not be used to validate
 security behavior.
 
+## Contents
+
+1. [Getting started](#1-getting-started)
+   1. [Prerequisites](#11-prerequisites) ([macOS](#111-macos), [Linux](#112-linux))
+   2. [One-time setup](#12-one-time-setup)
+   3. [Start the stack and the UI](#13-start-the-stack-and-the-ui)
+   4. [Stop](#14-stop)
+   5. [Other available commands](#15-other-available-commands)
+2. [What the prototype explores](#2-what-the-prototype-explores)
+3. [Run without the stack (mock)](#3-run-without-the-stack-mock)
+   1. [FastAPI host with server-side sessions](#31-fastapi-host-with-server-side-sessions)
+   2. [Mock limitations](#32-mock-limitations)
+4. [Local test stack (Zitadel + citius-server)](#4-local-test-stack-zitadel--citius-server)
+   1. [Hosted login (Authorization Code + PKCE)](#41-hosted-login-authorization-code--pkce)
+5. [Test](#5-test)
+
 ## 1. Getting started
 
 These steps start a local Zitadel + `citius-server` stack in containers, then
@@ -17,8 +33,9 @@ Docker has not been tested yet**, on either OS.
 
 ### 1.1 Prerequisites
 
-- You need an SSH key registered with GitHub that can read the
-`agile-crypto/citius-server` and `agile-crypto/citius-python-sdk` repositories, as the submodule URLs use SSH. You can find the details to generate a new SSH key [here](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent). 
+- You need read access to the `agile-crypto/citius-ui`,
+  `agile-crypto/citius-server` and `agile-crypto/citius-python-sdk` GitHub
+  repositories.
 - Ports **8880**, **8443**, **50051** and **7861**
 must be free on the host.
 
@@ -86,7 +103,7 @@ SELinux (Fedora/RHEL) is handled automatically when `ENGINE=podman` is set.
 mkcert -install
 
 # Clone the UI together with its citius-server and citius-python-sdk submodules.
-git clone --recurse-submodules git@github.com:agile-crypto/citius-ui.git
+git clone --recurse-submodules https://github.com/agile-crypto/citius-ui.git
 cd citius-ui
 ```
 
@@ -210,6 +227,17 @@ submodule generates `citius-server/bootstrap/zitadel/citius-ui-auth.json`.
 set it explicitly when running from another directory or against another
 `citius-server` checkout.
 
+### 3.2 Mock limitations
+
+- Authentication is a mock sign-in screen, not Zitadel login. Switching identity
+  requires logout; use separate browser profiles for concurrent demo users.
+- Cryptographic values are deterministic placeholders, not real cryptography.
+- Artifact compatibility models the Citius `OperationMetadata.key_version`
+  contract; rotation remains marked pending until its server RPC is implemented.
+- RPC availability mirrors the implementation assessment captured in `IMPLEMENTATION_PLAN.md`.
+- Policies and keys are shared in the mock process; identity and history exist only
+  in the Gradio browser session.
+
 ## 4. Local test stack (Zitadel + citius-server)
 
 The `citius-server` submodule owns a one-command local stack. It brings up
@@ -305,16 +333,8 @@ uv run pytest
 uv build
 ```
 
-CI runs the same gates and Gitleaks secret scanning. This project uses the
-Apache-2.0 license, matching the Citius server and Python SDK repositories.
+CI runs the same gates. Gitleaks secret scanning is disabled for now, until
+the (free) Gitleaks license for organization repositories is in place.
 
-## 6. Mock limitations
-
-- Authentication is a mock sign-in screen, not Zitadel login. Switching identity
-  requires logout; use separate browser profiles for concurrent demo users.
-- Cryptographic values are deterministic placeholders, not real cryptography.
-- Artifact compatibility models the Citius `OperationMetadata.key_version`
-  contract; rotation remains marked pending until its server RPC is implemented.
-- RPC availability mirrors the implementation assessment captured in `IMPLEMENTATION_PLAN.md`.
-- Policies and keys are shared in the mock process; identity and history exist only
-  in the Gradio browser session.
+This project uses the Apache-2.0 license, matching the Citius server and Python
+SDK repositories.
